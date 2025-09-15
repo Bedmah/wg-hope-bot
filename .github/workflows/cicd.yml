@@ -1,0 +1,58 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/wg-bot:$(git rev-parse --short HEAD)
+          docker build -t $IMAGE .
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Tag latest
+        run: |
+          docker tag $IMAGE ghcr.io/${{ github.repository_owner }}/wg-bot:latest
+
+      - name: Push
+        run: |
+          docker push $IMAGE
+          docker push ghcr.io/${{ github.repository_owner }}/wg-bot:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            sudo mkdir -p /opt/wg-bot
+            cd /opt/wg-bot
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+            docker pull ghcr.io/${{ github.repository_owner }}/wg-bot:latest
+            docker compose down || true
+            docker compose up -d
+            docker image prune -f || true

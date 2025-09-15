@@ -1,0 +1,8 @@
+.env
+data/*
+!data/clients/.keep
+__pycache__/
+*.pyc
+# запираем любые приватные конфиги
+amn.conf
+secrets/

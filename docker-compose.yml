@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  wg-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wg-bot
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      SUPER_OWNER_CHAT_ID: ${SUPER_OWNER_CHAT_ID}
+      WG_INTERFACE: ${WG_INTERFACE:-wg0}
+      SERVER_PUBLIC_KEY: ${SERVER_PUBLIC_KEY}
+      SERVER_ENDPOINT: ${SERVER_ENDPOINT}
+      VPN_SUBNET: ${VPN_SUBNET:-10.8.1.0/24}
+      DNS_IP: ${DNS_IP:-1.1.1.1}
+      KEEPALIVE: ${KEEPALIVE:-25}
+      CLIENTS_DIR: /opt/wg-bot/clients
+      ALLOWED_IPS: ${ALLOWED_IPS:-0.0.0.0/0,::/0}
+      MTU: ${MTU:-1420}
+      AMNEZIA_ENDPOINT: ${AMNEZIA_ENDPOINT}
+    volumes:
+      - ./data/clients:/opt/wg-bot/clients
