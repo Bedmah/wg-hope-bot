@@ -179,20 +179,20 @@ def change_credentials(current_password: str, new_username: str, new_password: s
     with db_conn() as conn:
         row = conn.execute("SELECT username, password_salt, password_hash FROM monitor_auth WHERE id=1").fetchone()
         if not row:
-            return False, "РџСЂРѕС„РёР»СЊ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР° РЅРµ РЅР°Р№РґРµРЅ."
+            return False, "Профиль администратора не найден."
         if not verify_password(current_password, row["password_salt"], row["password_hash"]):
-            return False, "РўРµРєСѓС‰РёР№ РїР°СЂРѕР»СЊ РЅРµРІРµСЂРЅС‹Р№."
+            return False, "Текущий пароль неверный."
         if len(new_username.strip()) < 3:
-            return False, "Р›РѕРіРёРЅ СЃР»РёС€РєРѕРј РєРѕСЂРѕС‚РєРёР№."
+            return False, "Логин слишком короткий."
         if len(new_password) < 6:
-            return False, "РџР°СЂРѕР»СЊ СЃР»РёС€РєРѕРј РєРѕСЂРѕС‚РєРёР№ (РјРёРЅРёРјСѓРј 6 СЃРёРјРІРѕР»РѕРІ)."
+            return False, "Пароль слишком короткий (минимум 6 символов)."
         salt, hashed = hash_password(new_password)
         conn.execute(
             "UPDATE monitor_auth SET username=?, password_salt=?, password_hash=?, updated_at=? WHERE id=1",
             (new_username.strip(), salt, hashed, now_iso()),
         )
         conn.commit()
-    return True, "РЈС‡РµС‚РЅС‹Рµ РґР°РЅРЅС‹Рµ РѕР±РЅРѕРІР»РµРЅС‹."
+    return True, "Учетные данные обновлены."
 
 
 def run_wg_dump() -> list[dict[str, Any]]:
@@ -494,12 +494,12 @@ def make_labels(start: datetime, bucket_seconds: int, count: int) -> list[str]:
 
 def bucket_label_ru(bucket_seconds: int) -> str:
     if bucket_seconds < 60:
-        return f"{bucket_seconds} СЃРµРє"
+        return f"{bucket_seconds} сек"
     if bucket_seconds < 3600:
-        return f"{bucket_seconds // 60} РјРёРЅ"
+        return f"{bucket_seconds // 60} мин"
     if bucket_seconds < 86400:
-        return f"{bucket_seconds // 3600} С‡"
-    return f"{bucket_seconds // 86400} РґРЅ"
+        return f"{bucket_seconds // 3600} ч"
+    return f"{bucket_seconds // 86400} дн"
 
 
 def period_params(conn: sqlite3.Connection, period: str, peer_pubs: list[str]) -> tuple[datetime, int, int, str]:
@@ -847,8 +847,8 @@ def load_user_detail(
                 "period": period,
                 "graph_scope": graph_scope,
             },
-            "period_values": [("1h", "1 С‡Р°СЃ"), ("24h", "24 С‡Р°СЃР°"), ("7d", "РќРµРґРµР»СЏ"), ("30d", "РњРµСЃСЏС†"), ("all", "Р’СЃС‘ РІСЂРµРјСЏ")],
-            "graph_scope_values": [("all", "Р’СЃРµ РіСЂР°С„РёРєРё"), ("user", "РўРѕР»СЊРєРѕ РѕР±С‰РёР№"), ("config", "РўРѕР»СЊРєРѕ РїРѕ РєРѕРЅС„РёРіР°Рј"), ("none", "РЎРєСЂС‹С‚СЊ РіСЂР°С„РёРєРё")],
+            "period_values": [("1h", "1 час"), ("24h", "24 часа"), ("7d", "Неделя"), ("30d", "Месяц"), ("all", "Всё время")],
+            "graph_scope_values": [("all", "Все графики"), ("user", "Только общий"), ("config", "Только по конфигам"), ("none", "Скрыть графики")],
             "bucket_seconds": bucket_seconds,
             "bucket_label": bucket_label_ru(bucket_seconds),
             "poll_seconds": MONITOR_POLL_SEC,
@@ -894,7 +894,7 @@ async def login_submit(request: Request, username: str = Form(...), password: st
     if verify_credentials(username.strip(), password):
         request.session["auth_user"] = username.strip()
         return RedirectResponse("/", status_code=302)
-    return TEMPLATES.TemplateResponse("login.html", {"request": request, "error": "РќРµРІРµСЂРЅС‹Р№ Р»РѕРіРёРЅ РёР»Рё РїР°СЂРѕР»СЊ."})
+    return TEMPLATES.TemplateResponse("login.html", {"request": request, "error": "Неверный логин или пароль."})
 
 
 @app.get("/logout")
@@ -977,7 +977,7 @@ async def settings_submit(
     if new_password != repeat_password:
         return TEMPLATES.TemplateResponse(
             "settings.html",
-            {"request": request, "error": "РќРѕРІС‹Рµ РїР°СЂРѕР»Рё РЅРµ СЃРѕРІРїР°РґР°СЋС‚.", "ok": "", "auth_user": request.session.get("auth_user", "")},
+            {"request": request, "error": "Новые пароли не совпадают.", "ok": "", "auth_user": request.session.get("auth_user", "")},
         )
     ok, msg = change_credentials(current_password, new_username, new_password)
     if ok:
