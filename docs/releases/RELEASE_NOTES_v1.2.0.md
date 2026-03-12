@@ -103,7 +103,7 @@ journalctl -u wg-hope-monitor.service -n 50 --no-pager
   - `README.md`
   - `CHANGELOG.md`
   - `.env.example`
-  - `RELEASE_NOTES_v1.2.0.md`
+  - `docs/releases/RELEASE_NOTES_v1.2.0.md`
 - Deploy-шаблоны:
   - `deploy/systemd/wg-hope-bot.service`
   - `deploy/systemd/wg-hope-monitor.service`
