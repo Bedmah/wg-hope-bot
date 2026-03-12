@@ -6,6 +6,7 @@ from telegram import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardBu
 BUTTON_ADD = "Добавить"
 BUTTON_LIST = "Список"
 BUTTON_GUIDE = "Инструкция"
+BUTTON_REGION = "Регион"
 BUTTON_SUPPORT = "Вопросы / Поддержка"
 BUTTON_ADMIN = "Админка"
 BUTTON_BACK = "Назад"
@@ -19,6 +20,7 @@ BUTTON_A_BROADCAST = "Сообщения"
 BUTTON_A_LIMITS = "Лимиты"
 BUTTON_A_STATS = "Статистика"
 BUTTON_A_LOGS = "Логи"
+BUTTON_A_SERVERS = "Сервера"
 
 BUTTON_U_PENDING = "Заявки"
 BUTTON_U_ACTIVE = "Активные"
@@ -40,11 +42,22 @@ BUTTON_C_VIEW = "Показать тексты"
 BUTTON_C_GUIDE = "Изменить инструкцию"
 BUTTON_C_SUPPORT = "Изменить поддержку"
 
+BUTTON_S_LIST_IFACES = "Интерфейсы"
+BUTTON_S_ADD_IFACE = "Добавить интерфейс"
+BUTTON_S_DEL_IFACE = "Удалить интерфейс"
+BUTTON_S_CFG_IFACE = "Заменить конфиг"
+BUTTON_S_LIST_REGIONS = "Регионы"
+BUTTON_S_ADD_REGION = "Добавить/изменить регион"
+BUTTON_S_DEL_REGION = "Удалить регион"
+BUTTON_S_DEFAULT_REGION = "Регион по умолчанию"
+BUTTON_S_STATUS = "Проверить сервера"
+
 
 def bottom_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     rows = [
         [BUTTON_ADD, BUTTON_LIST],
-        [BUTTON_GUIDE, BUTTON_SUPPORT],
+        [BUTTON_GUIDE, BUTTON_REGION],
+        [BUTTON_SUPPORT],
     ]
     if is_admin:
         rows.append([BUTTON_ADMIN])
@@ -57,6 +70,7 @@ def admin_main_menu(is_super_owner: bool) -> ReplyKeyboardMarkup:
         [BUTTON_A_MONITORING, BUTTON_A_CUSTOMIZE],
         [BUTTON_A_BROADCAST, BUTTON_A_LIMITS],
         [BUTTON_A_STATS, BUTTON_A_LOGS],
+        [BUTTON_A_SERVERS],
         [BUTTON_A_SYNC_PROFILES],
     ]
     rows.append([BUTTON_BACK])
@@ -106,6 +120,20 @@ def admin_customize_menu() -> ReplyKeyboardMarkup:
     )
 
 
+def admin_servers_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_S_LIST_IFACES, BUTTON_S_LIST_REGIONS],
+            [BUTTON_S_ADD_IFACE, BUTTON_S_DEL_IFACE],
+            [BUTTON_S_ADD_REGION, BUTTON_S_DEL_REGION],
+            [BUTTON_S_DEFAULT_REGION, BUTTON_S_CFG_IFACE],
+            [BUTTON_S_STATUS],
+            [BUTTON_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def clients_kb(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows = [
         [
@@ -114,6 +142,25 @@ def clients_kb(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
         ]
         for label, stored_name in items
     ]
+    return InlineKeyboardMarkup(rows)
+
+
+def region_clients_kb(items: list[tuple[int, str, str]]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(f"{label} ({region})", callback_data=f"rsel:{client_id}"),
+        ]
+        for client_id, label, region in items
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def region_pick_kb(client_id: int, options: list[tuple[str, str]], current_code: str) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(f"{'✅ ' if code == current_code else ''}{label}", callback_data=f"rset:{client_id}:{code}")]
+        for code, label in options
+    ]
+    rows.append([InlineKeyboardButton("Назад к списку", callback_data="rlist")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -172,3 +219,15 @@ def logs_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Назад", callback_data="u_back_main")],
         ]
     )
+
+
+def servers_delete_iface_kb(names: list[str]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"Удалить {name}", callback_data=f"sdelif:{name}")] for name in names]
+    rows.append([InlineKeyboardButton("Назад", callback_data="srv_back")])
+    return InlineKeyboardMarkup(rows)
+
+
+def servers_delete_region_kb(items: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"Удалить {label} [{code}]", callback_data=f"sdelrg:{code}")] for code, label in items]
+    rows.append([InlineKeyboardButton("Назад", callback_data="srv_back")])
+    return InlineKeyboardMarkup(rows)

@@ -4,10 +4,18 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Iterable
 
+from .regions import (
+    REGION_AMSTERDAM,
+    REGION_DEFAULT,
+    REGION_LATVIA,
+    REGION_MOSCOW,
+    normalize_region,
+)
 from .settings import DB_PATH, SUPER_OWNER_CHAT_ID, DEFAULT_USER_LIMIT, ADMIN_LIMIT
 
 ROLES = ("super_owner", "admin", "user", "pending", "banned")
 BOT_TEXT_KEYS = ("user_guide", "support_text")
+UPLINK_TYPES = ("system", "amneziawg", "wireguard")
 
 
 def now_iso() -> str:
@@ -99,12 +107,22 @@ def init() -> None:
                 name TEXT NOT NULL,
                 ip TEXT NOT NULL,
                 pub TEXT NOT NULL,
+                region TEXT NOT NULL DEFAULT 'latvia',
                 created_at TEXT NOT NULL,
                 UNIQUE(owner_chat_id, name),
                 UNIQUE(ip)
             )
             """
         )
+        client_cols = _table_columns(cur, "clients")
+        if "region" not in client_cols:
+            cur.execute("ALTER TABLE clients ADD COLUMN region TEXT")
+            cur.execute("UPDATE clients SET region=? WHERE region IS NULL OR TRIM(region)=''", (REGION_DEFAULT,))
+        cur.execute("UPDATE clients SET region=? WHERE region IS NULL OR TRIM(region)=''", (REGION_DEFAULT,))
+        for row in cur.execute("SELECT id, region FROM clients").fetchall():
+            normalized = normalize_region(row["region"])
+            if normalized != row["region"]:
+                cur.execute("UPDATE clients SET region=? WHERE id=?", (normalized, row["id"]))
 
         cur.execute(
             """
@@ -128,6 +146,111 @@ def init() -> None:
             )
             """
         )
+
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_interfaces(
+                name TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                config_path TEXT,
+                service_name TEXT,
+                table_id INTEGER,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_regions(
+                code TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                interface_name TEXT NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_health(
+                interface_name TEXT PRIMARY KEY,
+                is_ok INTEGER NOT NULL,
+                details TEXT,
+                updated_at TEXT NOT NULL,
+                last_alert_state TEXT,
+                last_alert_at TEXT
+            )
+            """
+        )
+
+        iface_cols = _table_columns(cur, "uplink_interfaces")
+        if "table_id" not in iface_cols:
+            cur.execute("ALTER TABLE uplink_interfaces ADD COLUMN table_id INTEGER")
+        if "enabled" not in iface_cols:
+            cur.execute("ALTER TABLE uplink_interfaces ADD COLUMN enabled INTEGER")
+            cur.execute("UPDATE uplink_interfaces SET enabled=1 WHERE enabled IS NULL")
+
+        ts = now_iso()
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+            VALUES('eth0','system',NULL,NULL,NULL,1,?,?)
+            """,
+            (ts, ts),
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+            VALUES('aw-lv','amneziawg','/etc/amnezia/amneziawg/aw-lv.conf','amnezia-awg@aw-lv.service',166,1,?,?)
+            """,
+            (ts, ts),
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+            VALUES('aw-am','amneziawg','/etc/amnezia/amneziawg/aw-am.conf','amnezia-awg@aw-am.service',167,1,?,?)
+            """,
+            (ts, ts),
+        )
+
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (REGION_MOSCOW, "Москва", "eth0", 0, ts, ts),
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (REGION_LATVIA, "Латвия", "aw-lv", 1, ts, ts),
+        )
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+            VALUES(?,?,?,?,?,?)
+            """,
+            (REGION_AMSTERDAM, "Амстердам", "aw-am", 0, ts, ts),
+        )
+        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Москва", REGION_MOSCOW))
+        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Латвия", REGION_LATVIA))
+        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Амстердам", REGION_AMSTERDAM))
+        default_row = cur.execute(
+            "SELECT code FROM uplink_regions WHERE is_default=1 ORDER BY code LIMIT 1"
+        ).fetchone()
+        default_code = default_row["code"] if default_row else REGION_DEFAULT
+        valid_codes = {r["code"] for r in cur.execute("SELECT code FROM uplink_regions").fetchall()}
+        for row in cur.execute("SELECT id, region FROM clients").fetchall():
+            norm = normalize_region(row["region"])
+            if norm not in valid_codes:
+                norm = default_code
+            if norm != row["region"]:
+                cur.execute("UPDATE clients SET region=? WHERE id=?", (norm, row["id"]))
 
         if SUPER_OWNER_CHAT_ID:
             row = cur.execute("SELECT chat_id FROM users WHERE chat_id=?", (SUPER_OWNER_CHAT_ID,)).fetchone()
@@ -294,11 +417,14 @@ def approved_chat_ids() -> list[str]:
         return [r["chat_id"] for r in rows]
 
 
-def add_client(owner_chat_id: str, stored_name: str, ip: str, pub: str) -> None:
+def add_client(owner_chat_id: str, stored_name: str, ip: str, pub: str, region: str | None = None) -> None:
+    region_code = normalize_region(region)
+    if not region_exists(region_code):
+        region_code = get_default_region_code()
     with _db() as conn:
         conn.execute(
-            "INSERT INTO clients(owner_chat_id, name, ip, pub, created_at) VALUES(?,?,?,?,?)",
-            (owner_chat_id, stored_name, ip, pub, now_iso()),
+            "INSERT INTO clients(owner_chat_id, name, ip, pub, region, created_at) VALUES(?,?,?,?,?,?)",
+            (owner_chat_id, stored_name, ip, pub, region_code, now_iso()),
         )
         conn.commit()
 
@@ -308,6 +434,14 @@ def get_client(owner_chat_id: str, stored_name: str):
         return conn.execute(
             "SELECT * FROM clients WHERE owner_chat_id=? AND name=?",
             (owner_chat_id, stored_name),
+        ).fetchone()
+
+
+def get_client_by_id(owner_chat_id: str, client_id: int):
+    with _db() as conn:
+        return conn.execute(
+            "SELECT * FROM clients WHERE owner_chat_id=? AND id=?",
+            (owner_chat_id, int(client_id)),
         ).fetchone()
 
 
@@ -334,6 +468,210 @@ def delete_client(owner_chat_id: str, stored_name: str) -> None:
     with _db() as conn:
         conn.execute("DELETE FROM clients WHERE owner_chat_id=? AND name=?", (owner_chat_id, stored_name))
         conn.commit()
+
+
+def set_client_region(owner_chat_id: str, client_id: int, region: str) -> bool:
+    region_code = normalize_region(region)
+    if not region_exists(region_code):
+        return False
+    with _db() as conn:
+        cur = conn.execute(
+            "UPDATE clients SET region=? WHERE owner_chat_id=? AND id=?",
+            (region_code, owner_chat_id, int(client_id)),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_uplink_interfaces():
+    with _db() as conn:
+        return conn.execute("SELECT * FROM uplink_interfaces ORDER BY name").fetchall()
+
+
+def get_uplink_interface(name: str):
+    with _db() as conn:
+        return conn.execute("SELECT * FROM uplink_interfaces WHERE name=?", (name.strip(),)).fetchone()
+
+
+def next_table_id(start: int = 200) -> int:
+    with _db() as conn:
+        rows = conn.execute("SELECT table_id FROM uplink_interfaces WHERE table_id IS NOT NULL").fetchall()
+        used = {int(r["table_id"]) for r in rows if r["table_id"] is not None}
+    table_id = int(start)
+    while table_id in used:
+        table_id += 1
+    return table_id
+
+
+def upsert_uplink_interface(
+    name: str,
+    kind: str,
+    config_path: str | None,
+    service_name: str | None,
+    table_id: int | None,
+    enabled: int = 1,
+) -> None:
+    iface = name.strip()
+    if not iface:
+        raise ValueError("empty interface name")
+    if kind not in UPLINK_TYPES:
+        raise ValueError("bad interface kind")
+    ts = now_iso()
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(name) DO UPDATE SET
+                kind=excluded.kind,
+                config_path=excluded.config_path,
+                service_name=excluded.service_name,
+                table_id=excluded.table_id,
+                enabled=excluded.enabled,
+                updated_at=excluded.updated_at
+            """,
+            (iface, kind, config_path, service_name, table_id, int(enabled), ts, ts),
+        )
+        conn.commit()
+
+
+def delete_uplink_interface(name: str) -> bool:
+    iface = name.strip()
+    with _db() as conn:
+        in_use = conn.execute("SELECT COUNT(*) AS n FROM uplink_regions WHERE interface_name=?", (iface,)).fetchone()
+        if in_use and int(in_use["n"]) > 0:
+            return False
+        cur = conn.execute("DELETE FROM uplink_interfaces WHERE name=?", (iface,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def list_regions():
+    with _db() as conn:
+        return conn.execute("SELECT * FROM uplink_regions ORDER BY label, code").fetchall()
+
+
+def get_region(code: str):
+    with _db() as conn:
+        return conn.execute("SELECT * FROM uplink_regions WHERE code=?", (normalize_region(code),)).fetchone()
+
+
+def region_exists(code: str) -> bool:
+    with _db() as conn:
+        row = conn.execute("SELECT code FROM uplink_regions WHERE code=?", (normalize_region(code),)).fetchone()
+        return bool(row)
+
+
+def get_default_region_code() -> str:
+    with _db() as conn:
+        row = conn.execute("SELECT code FROM uplink_regions WHERE is_default=1 ORDER BY code LIMIT 1").fetchone()
+        if row:
+            return row["code"]
+        row_any = conn.execute("SELECT code FROM uplink_regions ORDER BY code LIMIT 1").fetchone()
+        return row_any["code"] if row_any else REGION_DEFAULT
+
+
+def region_label_by_code(code: str) -> str:
+    with _db() as conn:
+        row = conn.execute("SELECT label FROM uplink_regions WHERE code=?", (normalize_region(code),)).fetchone()
+        return row["label"] if row else normalize_region(code)
+
+
+def upsert_region(code: str, label: str, interface_name: str, is_default: int = 0) -> None:
+    region_code = normalize_region(code)
+    if not region_code:
+        raise ValueError("empty region code")
+    if not get_uplink_interface(interface_name):
+        raise ValueError("interface not found")
+    ts = now_iso()
+    with _db() as conn:
+        if int(is_default):
+            conn.execute("UPDATE uplink_regions SET is_default=0")
+        conn.execute(
+            """
+            INSERT INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(code) DO UPDATE SET
+                label=excluded.label,
+                interface_name=excluded.interface_name,
+                is_default=excluded.is_default,
+                updated_at=excluded.updated_at
+            """,
+            (region_code, label.strip() or region_code, interface_name.strip(), int(is_default), ts, ts),
+        )
+        conn.commit()
+
+
+def delete_region(code: str, move_clients_to: str | None = None) -> bool:
+    region_code = normalize_region(code)
+    fallback = normalize_region(move_clients_to) if move_clients_to else get_default_region_code()
+    with _db() as conn:
+        row = conn.execute("SELECT * FROM uplink_regions WHERE code=?", (region_code,)).fetchone()
+        if not row:
+            return False
+        if int(row["is_default"]) == 1 and fallback == region_code:
+            return False
+        if fallback == region_code or not conn.execute("SELECT code FROM uplink_regions WHERE code=?", (fallback,)).fetchone():
+            other = conn.execute("SELECT code FROM uplink_regions WHERE code<>? ORDER BY code LIMIT 1", (region_code,)).fetchone()
+            if not other:
+                return False
+            fallback = other["code"]
+        conn.execute("UPDATE clients SET region=? WHERE region=?", (fallback, region_code))
+        conn.execute("DELETE FROM uplink_regions WHERE code=?", (region_code,))
+        if row["is_default"]:
+            conn.execute("UPDATE uplink_regions SET is_default=1 WHERE code=?", (fallback,))
+        conn.commit()
+        return True
+
+
+def set_default_region(code: str) -> bool:
+    region_code = normalize_region(code)
+    with _db() as conn:
+        row = conn.execute("SELECT code FROM uplink_regions WHERE code=?", (region_code,)).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE uplink_regions SET is_default=0")
+        conn.execute("UPDATE uplink_regions SET is_default=1, updated_at=? WHERE code=?", (now_iso(), region_code))
+        conn.commit()
+        return True
+
+
+def admin_chat_ids() -> list[str]:
+    with _db() as conn:
+        rows = conn.execute("SELECT chat_id FROM users WHERE role IN ('super_owner','admin')").fetchall()
+    result = [str(r["chat_id"]) for r in rows if str(r["chat_id"]).isdigit()]
+    if SUPER_OWNER_CHAT_ID and str(SUPER_OWNER_CHAT_ID).isdigit() and SUPER_OWNER_CHAT_ID not in result:
+        result.append(SUPER_OWNER_CHAT_ID)
+    return result
+
+
+def set_uplink_health(interface_name: str, is_ok: bool, details: str, last_alert_state: str | None = None) -> None:
+    with _db() as conn:
+        existing = conn.execute(
+            "SELECT last_alert_state, last_alert_at FROM uplink_health WHERE interface_name=?",
+            (interface_name,),
+        ).fetchone()
+        alert_state = last_alert_state if last_alert_state is not None else (existing["last_alert_state"] if existing else None)
+        alert_at = now_iso() if last_alert_state is not None else (existing["last_alert_at"] if existing else None)
+        conn.execute(
+            """
+            INSERT INTO uplink_health(interface_name, is_ok, details, updated_at, last_alert_state, last_alert_at)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(interface_name) DO UPDATE SET
+                is_ok=excluded.is_ok,
+                details=excluded.details,
+                updated_at=excluded.updated_at,
+                last_alert_state=excluded.last_alert_state,
+                last_alert_at=excluded.last_alert_at
+            """,
+            (interface_name, 1 if is_ok else 0, details, now_iso(), alert_state, alert_at),
+        )
+        conn.commit()
+
+
+def get_uplink_health(interface_name: str):
+    with _db() as conn:
+        return conn.execute("SELECT * FROM uplink_health WHERE interface_name=?", (interface_name,)).fetchone()
 
 
 def used_ips_from_db() -> set[str]:

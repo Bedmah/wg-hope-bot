@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WG Monitor - Панель</title>
+  <title>WG Monitor - Пользователи</title>
   <style>
     body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
     .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; }
@@ -25,7 +25,9 @@
       <span class="muted">Обновлено: {{ updated_at }}</span>
     </div>
     <div class="links">
+      <span class="muted">Время сервера: {{ server_time }}</span>
       <span class="muted">Пользователь: {{ auth_user }}</span>
+      <a href="/servers">Серверы</a>
       <a href="/settings">Настройки</a>
       <a href="/logout">Выйти</a>
     </div>
@@ -46,6 +48,7 @@
           <th>Последний handshake</th>
           <th>Последняя активность в боте</th>
           <th>Топ назначения 24ч</th>
+          <th>Регионы по конфигам</th>
         </tr>
       </thead>
       <tbody>
@@ -67,6 +70,7 @@
           <td>{{ u.last_handshake }}</td>
           <td>{{ u.last_seen }}</td>
           <td>{{ u.top_destinations }}</td>
+          <td>{{ u.configs_regions }}</td>
         </tr>
         {% endfor %}
       </tbody>

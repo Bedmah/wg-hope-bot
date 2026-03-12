@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from . import db
 from . import chatlog
+from .routing import sync_client_egress_routes
 from .qr import make_qr
 from .settings import CLIENTS_DIR, SUPPORT_HANDLE
 from .wireguard import run, allocate_ip, validate_ip, add_peer, remove_peer, remove_peer_block, build_client_config
@@ -144,7 +145,8 @@ async def create_client(
         files["pub"].write_text(public_key, encoding="utf-8")
 
         add_peer(public_key, ip)
-        db.add_client(owner_chat_id, stored_name, ip, public_key)
+        region = db.get_default_region_code()
+        db.add_client(owner_chat_id, stored_name, ip, public_key, region=region)
         db.log_event("client_create", owner_chat_id, owner_chat_id, f"name={stored_name} ip={ip}")
 
         conf_text = build_client_config(private_key, ip)
@@ -159,12 +161,18 @@ async def create_client(
                     "display_name": name,
                     "ip": ip,
                     "pub": public_key,
+                    "region": region,
                 },
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
         )
+
+        try:
+            sync_client_egress_routes()
+        except Exception as route_exc:
+            db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
 
         await say(context, owner_chat_id, f"Готово. Конфиг: {name} | IP: {ip}")
         await send_config_files(context, owner_chat_id, files["conf"], files["qr"], name)
@@ -241,6 +249,11 @@ async def revoke_client(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: str, 
         except Exception:
             pass
 
+    try:
+        sync_client_egress_routes()
+    except Exception as route_exc:
+        db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
+
     db.log_event("client_revoke", owner_chat_id, owner_chat_id, f"name={stored_name}")
     await say(context, owner_chat_id, f"Конфиг {display_name_for(owner_chat_id, stored_name)} удален.")
 
@@ -267,6 +280,11 @@ def purge_user_clients(owner_chat_id: str) -> int:
             except Exception:
                 pass
         removed += 1
+
+    try:
+        sync_client_egress_routes()
+    except Exception as route_exc:
+        db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
 
     db.log_event("user_purge", owner_chat_id, owner_chat_id, f"removed={removed}")
     return removed

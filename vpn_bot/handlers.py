@@ -7,6 +7,19 @@ from telegram.ext import ContextTypes, CommandHandler, MessageHandler, CallbackQ
 
 from . import db
 from . import chatlog
+from .regions import normalize_region
+from .routing import sync_client_egress_routes
+from .server_admin import (
+    add_interface,
+    add_or_update_region,
+    delete_interface,
+    interface_status,
+    list_interfaces_text,
+    list_regions_text,
+    remove_region,
+    replace_interface_config,
+    set_default_region,
+)
 from .actions import (
     say,
     create_client,
@@ -26,12 +39,18 @@ from .keyboards import (
     admin_users_menu,
     admin_logs_menu,
     admin_customize_menu,
+    admin_servers_menu,
     pending_menu,
     clients_kb,
     admin_user_clients_kb,
+    region_clients_kb,
+    region_pick_kb,
+    servers_delete_iface_kb,
+    servers_delete_region_kb,
     BUTTON_ADD,
     BUTTON_LIST,
     BUTTON_GUIDE,
+    BUTTON_REGION,
     BUTTON_SUPPORT,
     BUTTON_ADMIN,
     BUTTON_BACK,
@@ -44,6 +63,7 @@ from .keyboards import (
     BUTTON_A_LIMITS,
     BUTTON_A_STATS,
     BUTTON_A_LOGS,
+    BUTTON_A_SERVERS,
     BUTTON_U_PENDING,
     BUTTON_U_ACTIVE,
     BUTTON_U_BANNED,
@@ -60,6 +80,15 @@ from .keyboards import (
     BUTTON_C_VIEW,
     BUTTON_C_GUIDE,
     BUTTON_C_SUPPORT,
+    BUTTON_S_LIST_IFACES,
+    BUTTON_S_ADD_IFACE,
+    BUTTON_S_DEL_IFACE,
+    BUTTON_S_CFG_IFACE,
+    BUTTON_S_LIST_REGIONS,
+    BUTTON_S_ADD_REGION,
+    BUTTON_S_DEL_REGION,
+    BUTTON_S_DEFAULT_REGION,
+    BUTTON_S_STATUS,
 )
 from .settings import SUPER_OWNER_CHAT_ID, VPN_SUBNET, CHAT_DIR, MONITOR_URL
 
@@ -98,7 +127,47 @@ def menu_for_ui(role: str | None, ui_menu: str):
         return admin_logs_menu()
     if ui_menu == "admin_customize":
         return admin_customize_menu()
+    if ui_menu == "admin_servers":
+        return admin_servers_menu()
     return main_menu_for(role)
+
+
+def clients_region_text(rows) -> str:
+    if not rows:
+        return "У вас пока нет конфигов."
+    lines = ["Текущие регионы ваших конфигов:"]
+    for row in rows:
+        label = display_name_for(str(row["owner_chat_id"]), row["name"])
+        lines.append(f"- {label} | {row['ip']} | {db.region_label_by_code(row['region'])}")
+    return "\n".join(lines)
+
+
+def interfaces_for_delete_text() -> tuple[str, list[str]]:
+    rows = db.list_uplink_interfaces()
+    if not rows:
+        return "Интерфейсов нет.", []
+    lines = ["Выбери интерфейс для удаления:"]
+    names: list[str] = []
+    for row in rows:
+        name = str(row["name"])
+        names.append(name)
+        lines.append(f"- {name} | kind={row['kind']} | enabled={row['enabled']}")
+    return "\n".join(lines), names
+
+
+def regions_for_delete_text() -> tuple[str, list[tuple[str, str]]]:
+    rows = db.list_regions()
+    if not rows:
+        return "Регионов нет.", []
+    lines = ["Выбери регион для удаления:"]
+    items: list[tuple[str, str]] = []
+    for row in rows:
+        code = str(row["code"])
+        label = str(row["label"])
+        default_tag = " (default)" if int(row["is_default"]) == 1 else ""
+        items.append((code, label))
+        lines.append(f"- {label} [{code}] -> {row['interface_name']}{default_tag}")
+    return "\n".join(lines), items
 
 
 async def send_chunks(context: ContextTypes.DEFAULT_TYPE, chat_id: str, text: str, kb=None) -> None:
@@ -219,7 +288,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Действие отменено.", main_menu_for(role))
             return
 
-        if ui_menu in ("admin_users", "admin_logs", "admin_customize"):
+        if ui_menu in ("admin_users", "admin_logs", "admin_customize", "admin_servers"):
             context.user_data["ui_menu"] = "admin_main"
             await say(context, chat_id, "Админка", admin_menu_for(role))
             return
@@ -245,11 +314,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await say(context, chat_id, "Меню", main_menu_for(role))
         return
 
-    if BUTTON_GUIDE.lower() in lower:
+    if text == BUTTON_GUIDE:
         await say(context, chat_id, get_user_guide(), main_menu_for(role))
         return
 
-    if BUTTON_ADD.lower() in lower:
+    if text == BUTTON_ADD:
         context.user_data["user_mode"] = "add"
         await say(
             context,
@@ -259,22 +328,37 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    if BUTTON_LIST.lower() in lower:
+    if text == BUTTON_LIST:
         rows = db.list_clients(chat_id)
         if not rows:
             await say(context, chat_id, "Список пуст.", main_menu_for(role))
             return
         items = [(display_name_for(chat_id, row["name"]), row["name"]) for row in rows]
-        body = "\n".join(f"- {label} | {row['ip']}" for (label, _), row in zip(items, rows))
+        body = "\n".join(
+            f"- {label} | {row['ip']} | регион: {db.region_label_by_code(row['region'])}" for (label, _), row in zip(items, rows)
+        )
         await say(context, chat_id, f"Ваши конфиги:\n{body}", clients_kb(items))
         await say(context, chat_id, "Управление конфигами кнопками ниже сообщения. Основное меню под чатом.", main_menu_for(role))
+        return
+
+    if text == BUTTON_REGION:
+        rows = db.list_clients(chat_id)
+        if not rows:
+            await say(context, chat_id, "У вас пока нет конфигов.", main_menu_for(role))
+            return
+        items = [
+            (int(row["id"]), display_name_for(chat_id, row["name"]), db.region_label_by_code(row["region"]))
+            for row in rows
+        ]
+        await say(context, chat_id, clients_region_text(rows), region_clients_kb(items))
+        await say(context, chat_id, "Выбери конфиг, чтобы изменить регион выхода в интернет.", main_menu_for(role))
         return
 
     if text == BUTTON_SUPPORT or (ui_menu == "main" and ("вопрос" in lower or "поддерж" in lower)):
         await say(context, chat_id, get_support_text(), main_menu_for(role))
         return
 
-    if is_adminish(role) and BUTTON_ADMIN.lower() in lower:
+    if is_adminish(role) and text == BUTTON_ADMIN:
         context.user_data["ui_menu"] = "admin_main"
         await say(context, chat_id, "Админка", admin_menu_for(role))
         return
@@ -330,6 +414,114 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_adminish(role) and text == BUTTON_A_CUSTOMIZE:
         context.user_data["ui_menu"] = "admin_customize"
         await say(context, chat_id, "Кастомизация", admin_customize_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_A_SERVERS:
+        context.user_data["ui_menu"] = "admin_servers"
+        await say(context, chat_id, "Управление серверами", admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_LIST_IFACES:
+        context.user_data["ui_menu"] = "admin_servers"
+        await send_chunks(context, chat_id, list_interfaces_text(), admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_LIST_REGIONS:
+        context.user_data["ui_menu"] = "admin_servers"
+        await send_chunks(context, chat_id, list_regions_text(), admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_STATUS:
+        context.user_data["ui_menu"] = "admin_servers"
+        lines = ["Состояние интерфейсов:"]
+        for iface in db.list_uplink_interfaces():
+            ok, details = interface_status(iface["name"])
+            lines.append(f"- {'OK' if ok else 'FAIL'} {details}")
+        await send_chunks(context, chat_id, "\n".join(lines), admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_ADD_IFACE:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = "srv_add_iface"
+        await say(
+            context,
+            chat_id,
+            "Добавление интерфейса (канала выхода в интернет).\n\n"
+            "Формат:\n"
+            "<имя_интерфейса> <тип> [table_id]\n\n"
+            "Где:\n"
+            "- имя_интерфейса: например aw-de\n"
+            "- тип:\n"
+            "  amneziawg  — AmneziaWG интерфейс (обычно aw-*)\n"
+            "  wireguard  — обычный WireGuard интерфейс\n"
+            "  system     — системный интерфейс (например eth0)\n"
+            "- table_id: номер таблицы маршрутизации (опционально)\n\n"
+            "Примеры:\n"
+            "aw-de amneziawg 210\n"
+            "eth0 system",
+            admin_servers_menu(),
+        )
+        return
+
+    if is_adminish(role) and text == BUTTON_S_DEL_IFACE:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = None
+        body, names = interfaces_for_delete_text()
+        if not names:
+            await say(context, chat_id, body, admin_servers_menu())
+            return
+        await say(context, chat_id, body, servers_delete_iface_kb(names))
+        await say(context, chat_id, "Для отмены нажми 'Назад'.", admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_ADD_REGION:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = "srv_add_region"
+        await say(
+            context,
+            chat_id,
+            "Добавление/изменение региона (то, что видит пользователь в кнопке «Регион»).\n\n"
+            "Формат:\n"
+            "<код>;<название>;<интерфейс>[;default]\n\n"
+            "Где:\n"
+            "- код: служебный ID региона (латиница), например germany\n"
+            "- название: как показывать пользователю, например Германия\n"
+            "- интерфейс: через какой интерфейс пускать трафик, например aw-de\n"
+            "- default (опционально): сделать этот регион по умолчанию для новых конфигов\n\n"
+            "Примеры:\n"
+            "germany;Германия;aw-de\n"
+            "latvia;Латвия;aw-lv;default",
+            admin_servers_menu(),
+        )
+        return
+
+    if is_adminish(role) and text == BUTTON_S_DEL_REGION:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = None
+        body, items = regions_for_delete_text()
+        if not items:
+            await say(context, chat_id, body, admin_servers_menu())
+            return
+        await say(context, chat_id, body, servers_delete_region_kb(items))
+        await say(context, chat_id, "Для отмены нажми 'Назад'.", admin_servers_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_S_DEFAULT_REGION:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = "srv_default_region"
+        await say(
+            context,
+            chat_id,
+            "Установка региона по умолчанию для НОВЫХ конфигов.\n"
+            "Введи код региона, например: latvia",
+            admin_servers_menu(),
+        )
+        return
+
+    if is_adminish(role) and text == BUTTON_S_CFG_IFACE:
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = "srv_cfg_iface_name"
+        await say(context, chat_id, "Введи имя интерфейса для замены конфига.", admin_servers_menu())
         return
 
     if is_adminish(role) and text == BUTTON_U_PENDING:
@@ -617,7 +809,9 @@ async def _handle_admin_mode(
             return True
 
         items = [(display_name_for(target_owner, r["name"]), r["name"]) for r in rows]
-        body = "\n".join(f"- {label} | {r['ip']}" for (label, _), r in zip(items, rows))
+        body = "\n".join(
+            f"- {label} | {r['ip']} | регион: {db.region_label_by_code(r['region'])}" for (label, _), r in zip(items, rows)
+        )
         await say(context, chat_id, f"Конфиги пользователя {target_owner}:\n{body}", admin_user_clients_kb(target_owner, items))
         return True
 
@@ -641,6 +835,113 @@ async def _handle_admin_mode(
         db.log_event("customize_support_text", chat_id, None, f"len={len(new_text)}")
         context.user_data["admin_mode"] = None
         await say(context, chat_id, "Текст поддержки обновлен.", admin_customize_menu())
+        return True
+
+    if admin_mode == "srv_add_iface":
+        parts = text.strip().split()
+        if len(parts) < 2:
+            await say(context, chat_id, "Неверный формат. Ожидаю: <ifname> <kind> [table_id].")
+            return True
+        ifname, kind = parts[0], parts[1]
+        table_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        try:
+            add_interface(ifname, kind=kind, table_id=table_id)
+            db.log_event("server_add_interface", chat_id, None, f"{ifname} kind={kind} table_id={table_id}")
+            context.user_data["admin_mode"] = None
+            await say(context, chat_id, f"Интерфейс {ifname} сохранен.", admin_servers_menu())
+            await send_chunks(context, chat_id, list_interfaces_text(), admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка добавления интерфейса: {exc}", admin_servers_menu())
+        return True
+
+    if admin_mode == "srv_del_iface":
+        ifname = text.strip()
+        try:
+            ok = delete_interface(ifname)
+            context.user_data["admin_mode"] = None
+            if ok:
+                db.log_event("server_delete_interface", chat_id, None, ifname)
+                await say(context, chat_id, f"Интерфейс {ifname} удален.", admin_servers_menu())
+            else:
+                await say(context, chat_id, "Не удалось удалить интерфейс (возможно, используется регионом).", admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка удаления интерфейса: {exc}", admin_servers_menu())
+        return True
+
+    if admin_mode == "srv_add_region":
+        parts = [x.strip() for x in text.split(";")]
+        if len(parts) < 3:
+            await say(context, chat_id, "Неверный формат. Ожидаю: <code>;<label>;<iface>[;default].")
+            return True
+        code, label, iface = parts[0], parts[1], parts[2]
+        make_default = len(parts) > 3 and parts[3].strip().lower() in ("default", "1", "yes", "true")
+        try:
+            add_or_update_region(code, label, iface, is_default=make_default)
+            db.log_event("server_upsert_region", chat_id, None, f"{code}->{iface} default={make_default}")
+            context.user_data["admin_mode"] = None
+            await say(context, chat_id, "Регион сохранен.", admin_servers_menu())
+            await send_chunks(context, chat_id, list_regions_text(), admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка сохранения региона: {exc}", admin_servers_menu())
+        return True
+
+    if admin_mode == "srv_del_region":
+        parts = [x.strip() for x in text.split(";")]
+        code = parts[0] if parts else ""
+        move_to = parts[1] if len(parts) > 1 and parts[1] else None
+        try:
+            ok = remove_region(code, move_to)
+            context.user_data["admin_mode"] = None
+            if ok:
+                db.log_event("server_delete_region", chat_id, None, f"{code} move_to={move_to}")
+                await say(context, chat_id, "Регион удален.", admin_servers_menu())
+            else:
+                await say(context, chat_id, "Не удалось удалить регион.", admin_servers_menu())
+            await send_chunks(context, chat_id, list_regions_text(), admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка удаления региона: {exc}", admin_servers_menu())
+        return True
+
+    if admin_mode == "srv_default_region":
+        code = text.strip()
+        try:
+            ok = set_default_region(code)
+            context.user_data["admin_mode"] = None
+            if ok:
+                db.log_event("server_default_region", chat_id, None, code)
+                await say(context, chat_id, f"Регион по умолчанию: {code}.", admin_servers_menu())
+            else:
+                await say(context, chat_id, "Регион не найден.", admin_servers_menu())
+            await send_chunks(context, chat_id, list_regions_text(), admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка установки default региона: {exc}", admin_servers_menu())
+        return True
+
+    if admin_mode == "srv_cfg_iface_name":
+        ifname = text.strip()
+        iface = db.get_uplink_interface(ifname)
+        if not iface:
+            await say(context, chat_id, "Интерфейс не найден.", admin_servers_menu())
+            return True
+        context.user_data["srv_iface_for_cfg"] = ifname
+        context.user_data["admin_mode"] = "srv_cfg_iface_body"
+        await say(
+            context,
+            chat_id,
+            f"Замена конфига интерфейса {ifname}.\n\n"
+            "Отправь полный новый конфиг одним сообщением.\n"
+            "Система сделает бэкап, попробует применить и при ошибке откатит обратно.",
+            admin_servers_menu(),
+        )
+        return True
+
+    if admin_mode == "srv_cfg_iface_body":
+        ifname = str(context.user_data.get("srv_iface_for_cfg", "")).strip()
+        ok, msg = replace_interface_config(ifname, text)
+        context.user_data.pop("srv_iface_for_cfg", None)
+        context.user_data["admin_mode"] = None
+        db.log_event("server_replace_config", chat_id, None, f"{ifname}: {msg}")
+        await say(context, chat_id, msg, admin_servers_menu())
         return True
 
     return False
@@ -671,16 +972,142 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await revoke_client(context, chat_id, stored_name)
         return
 
+    if data == "rlist":
+        rows = db.list_clients(chat_id)
+        if not rows:
+            await say(context, chat_id, "У вас пока нет конфигов.")
+            return
+        items = [
+            (int(row["id"]), display_name_for(chat_id, row["name"]), db.region_label_by_code(row["region"]))
+            for row in rows
+        ]
+        await say(context, chat_id, clients_region_text(rows), region_clients_kb(items))
+        return
+
+    if data.startswith("rsel:"):
+        client_id_raw = data.split(":", 1)[1].strip()
+        if not client_id_raw.isdigit():
+            await say(context, chat_id, "Некорректный выбор.")
+            return
+        row = db.get_client_by_id(chat_id, int(client_id_raw))
+        if not row:
+            await say(context, chat_id, "Конфиг не найден.")
+            return
+        label = display_name_for(chat_id, row["name"])
+        options = [(r["code"], r["label"]) for r in db.list_regions()]
+        current_code = row["region"]
+        await say(
+            context,
+            chat_id,
+            f"Конфиг: {label}\nIP: {row['ip']}\nТекущий регион: {db.region_label_by_code(current_code)}\nВыбери новый регион:",
+            region_pick_kb(int(row["id"]), options, current_code),
+        )
+        return
+
+    if data.startswith("rset:"):
+        parts = data.split(":", 2)
+        if len(parts) != 3:
+            await say(context, chat_id, "Некорректный выбор.")
+            return
+        _, client_id_raw, region_code = parts
+        if not client_id_raw.isdigit():
+            await say(context, chat_id, "Некорректный выбор.")
+            return
+        row = db.get_client_by_id(chat_id, int(client_id_raw))
+        if not row:
+            await say(context, chat_id, "Конфиг не найден.")
+            return
+        region_code = normalize_region(region_code)
+        if not db.set_client_region(chat_id, int(client_id_raw), region_code):
+            await say(context, chat_id, "Не удалось изменить регион.")
+            return
+        try:
+            sync_client_egress_routes()
+        except Exception as exc:
+            db.log_event("region_sync_error", chat_id, chat_id, str(exc))
+            await say(context, chat_id, "Регион сохранен, но применение маршрутизации завершилось с ошибкой.")
+            return
+
+        label = display_name_for(chat_id, row["name"])
+        db.log_event(
+            "client_region_set",
+            chat_id,
+            chat_id,
+            f"name={row['name']} ip={row['ip']} old_region={row['region']} new_region={region_code}",
+        )
+        await say(context, chat_id, f"Готово: {label} теперь выходит через регион {db.region_label_by_code(region_code)}.")
+        rows = db.list_clients(chat_id)
+        items = [
+            (int(item["id"]), display_name_for(chat_id, item["name"]), db.region_label_by_code(item["region"]))
+            for item in rows
+        ]
+        await say(context, chat_id, clients_region_text(rows), region_clients_kb(items))
+        return
+
     if not is_adminish(role):
         await say(context, chat_id, "Недостаточно прав.")
         return
 
+    if data == "srv_back":
+        context.user_data["ui_menu"] = "admin_servers"
+        context.user_data["admin_mode"] = None
+        await say(context, chat_id, "Управление серверами", admin_servers_menu())
+        return
+
+    if data.startswith("sdelif:"):
+        ifname = data.split(":", 1)[1].strip()
+        if not ifname:
+            await say(context, chat_id, "Некорректный интерфейс.", admin_servers_menu())
+            return
+        try:
+            ok = delete_interface(ifname)
+            if ok:
+                db.log_event("server_delete_interface", chat_id, None, ifname)
+                await say(context, chat_id, f"Интерфейс {ifname} удален.", admin_servers_menu())
+            else:
+                await say(context, chat_id, "Не удалось удалить интерфейс (возможно, используется регионом).", admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка удаления интерфейса: {exc}", admin_servers_menu())
+            return
+
+        body, names = interfaces_for_delete_text()
+        if names:
+            await say(context, chat_id, body, servers_delete_iface_kb(names))
+        else:
+            await say(context, chat_id, body, admin_servers_menu())
+        return
+
+    if data.startswith("sdelrg:"):
+        code = data.split(":", 1)[1].strip()
+        if not code:
+            await say(context, chat_id, "Некорректный регион.", admin_servers_menu())
+            return
+        try:
+            ok = remove_region(code, None)
+            if ok:
+                db.log_event("server_delete_region", chat_id, None, f"{code} move_to=default")
+                await say(context, chat_id, f"Регион {code} удален.", admin_servers_menu())
+            else:
+                await say(context, chat_id, "Не удалось удалить регион.", admin_servers_menu())
+        except Exception as exc:
+            await say(context, chat_id, f"Ошибка удаления региона: {exc}", admin_servers_menu())
+            return
+
+        body, items = regions_for_delete_text()
+        if items:
+            await say(context, chat_id, body, servers_delete_region_kb(items))
+        else:
+            await say(context, chat_id, body, admin_servers_menu())
+        return
+
     if data == "a_stats":
         await send_stats(context, chat_id)
+        await say(context, chat_id, "Админка", admin_menu_for(role))
         return
 
     if data == "a_sync_profiles":
         await sync_profiles_from_telegram(context, chat_id)
+        await say(context, chat_id, "Админка", admin_menu_for(role))
         return
 
     if data == "a_customize":
@@ -690,9 +1117,9 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if data == "a_monitoring":
         if MONITOR_URL:
-            await say(context, chat_id, f"Мониторинг: {MONITOR_URL}")
+            await say(context, chat_id, f"Мониторинг: {MONITOR_URL}", admin_menu_for(role))
         else:
-            await say(context, chat_id, "MONITOR_URL не задан в .env")
+            await say(context, chat_id, "MONITOR_URL не задан в .env", admin_menu_for(role))
         return
 
     if data == "a_logs":
@@ -723,16 +1150,16 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if data == "u_pending":
-        await send_chunks(context, chat_id, format_users(db.users_by_role("pending")))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("pending")), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_active":
         rows = db.users_by_role("super_owner") + db.users_by_role("admin") + db.users_by_role("user")
-        await send_chunks(context, chat_id, format_users(rows))
+        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_banned":
-        await send_chunks(context, chat_id, format_users(db.users_by_role("banned")))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("banned")), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_add":
@@ -770,7 +1197,7 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Недостаточно прав.")
             return
         rows = db.users_by_role("super_owner") + db.users_by_role("admin")
-        await send_chunks(context, chat_id, format_users(rows))
+        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_promote":

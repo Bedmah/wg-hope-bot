@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WG Monitor - Серверы</title>
+  <style>
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; z-index:2; }
+    .links a { margin-left:10px; color:#1252b7; text-decoration:none; }
+    .muted { color:#6a7583; font-size:12px; }
+    .wrap { padding:16px 20px; }
+    .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; background:#fff; border:1px solid #dde4ee; padding:10px; border-radius:10px; margin-bottom:12px; }
+    .filters select { padding:8px; border:1px solid #c8d0da; border-radius:8px; font-size:13px; }
+    .btn { display:inline-block; background:#1459c5; color:#fff; text-decoration:none; padding:8px 10px; border-radius:8px; font-size:13px; border:none; cursor:pointer; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:10px; margin-bottom:14px; }
+    .card { background:#fff; border:1px solid #dde4ee; border-radius:10px; padding:10px 12px; font-size:13px; }
+    .ok { color:#1f7a31; font-weight:700; }
+    .down { color:#b11d1d; font-weight:700; }
+    table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #dde4ee; margin-bottom:16px; }
+    th, td { padding:8px; border-bottom:1px solid #eef2f7; font-size:13px; text-align:left; vertical-align:top; }
+    th { background:#f1f5fa; }
+    .pill { display:inline-block; border:1px solid #d0daea; background:#f6f9ff; border-radius:999px; padding:2px 8px; margin-right:4px; margin-bottom:4px; font-size:12px; }
+    .chart-wrap { background:#fff; border:1px solid #dde4ee; border-radius:10px; padding:10px; margin-top:8px; overflow-x:auto; }
+    .events { margin-top:8px; border-top:1px dashed #d7deea; padding-top:8px; }
+    .events ul { margin:6px 0 0 18px; padding:0; }
+    .events li { margin:3px 0; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <strong>Серверы и регионы</strong>
+      <span class="muted">Обновлено: {{ data.updated_at }}</span>
+    </div>
+    <div class="links">
+      <span class="muted">Время сервера: {{ server_time }}</span>
+      <span class="muted">Пользователь: {{ auth_user }}</span>
+      <a href="/">Пользователи</a>
+      <a href="/settings">Настройки</a>
+      <a href="/logout">Выйти</a>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <form class="filters" method="get" action="/servers">
+      <span class="muted">Период:</span>
+      <select name="period">
+        {% for p in data.period_values %}
+        <option value="{{ p[0] }}" {% if data.period == p[0] %}selected{% endif %}>{{ p[1] }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Обновить</button>
+    </form>
+
+    <h3>Регионы</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Код</th>
+          <th>Название</th>
+          <th>Интерфейс</th>
+          <th>По умолчанию</th>
+          <th>Конфигов</th>
+          <th>Пользователей</th>
+          <th>Пользователи в регионе</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in data.regions %}
+        <tr>
+          <td>{{ r.code }}</td>
+          <td>{{ r.label }}</td>
+          <td>{{ r.interface_name }}</td>
+          <td>{% if r.is_default %}Да{% else %}Нет{% endif %}</td>
+          <td>{{ r.configs_count }}</td>
+          <td>{{ r.users_count }}</td>
+          <td>
+            {% if r.users %}
+              {% for u in r.users %}
+              <span class="pill">{{ u.title }} ({{ u.configs }})</span>
+              {% endfor %}
+            {% else %}
+              <span class="muted">нет</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Интерфейсы</h3>
+    <div class="cards">
+      {% for i in data.interfaces %}
+      <div class="card">
+        <div>
+          <strong>{{ i.name }}</strong>
+          {% if i.is_ok %}
+          <span class="ok">OK</span>
+          {% else %}
+          <span class="down">DOWN</span>
+          {% endif %}
+        </div>
+        <div class="muted">{{ i.kind }} | service={{ i.service_name }} | table={{ i.table_id }} | enabled={{ i.enabled }}</div>
+        <div style="margin-top:6px;">
+          {% for code in i.regions %}
+          <span class="pill">{{ code }}</span>
+          {% endfor %}
+        </div>
+        <div style="margin-top:8px;">Handshake: <strong>{{ i.latest_handshake }}</strong></div>
+        <div>Ping: <strong>{{ i.latest_ping_ms }}</strong> мс</div>
+        <div>RX/TX всего: <strong>{{ i.rx_total }}</strong> / <strong>{{ i.tx_total }}</strong></div>
+        <div>Скорость RX/TX: <strong>{{ i.rx_rate_mbps }}</strong> / <strong>{{ i.tx_rate_mbps }}</strong> Мбит/с</div>
+        <div>Uptime: <strong>{{ i.uptime_pct }}%</strong></div>
+        <div class="muted">Проверка: {{ i.health_updated_at }} | {{ i.health_details }}</div>
+
+        <div class="chart-wrap">
+          <canvas id="ifaceChart{{ loop.index }}" width="640" height="240"></canvas>
+        </div>
+
+        <div class="events">
+          <div><strong>Последние события состояния:</strong></div>
+          {% if i.events %}
+          <ul>
+            {% for e in i.events[:12] %}
+            <li>{{ e.event_ts }} | {{ e.details }}</li>
+            {% endfor %}
+          </ul>
+          {% else %}
+          <div class="muted">Событий нет.</div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script>
+    const interfaces = {{ data.interfaces | tojson }};
+    const ru = (v) => Number(v).toFixed(2).replace('.', ',');
+    interfaces.forEach((item, idx) => {
+      const node = document.getElementById('ifaceChart' + (idx + 1));
+      if (!node) return;
+      const speed = (item.speed_mbps || []).map(v => +Number(v || 0).toFixed(3));
+      const ping = (item.ping_ms_series || []).map(v => v === null ? null : +Number(v).toFixed(2));
+      const state = (item.state_series || []).map(v => Number(v) ? 1 : 0);
+      new Chart(node, {
+        data: {
+          labels: item.labels || [],
+          datasets: [
+            { type: 'bar', label: 'Скорость, Мбит/с', data: speed, yAxisID: 'ySpeed', backgroundColor: 'rgba(31,103,210,0.40)' },
+            { type: 'line', label: 'Ping, мс', data: ping, yAxisID: 'yPing', borderColor: '#e07a11', tension: 0.2, pointRadius: 1.4 },
+            { type: 'line', label: 'Состояние (1/0)', data: state, yAxisID: 'yState', borderColor: '#16925c', tension: 0.15, pointRadius: 0 }
+          ]
+        },
+        options: {
+          responsive: false,
+          maintainAspectRatio: true,
+          scales: {
+            ySpeed: { position: 'left', beginAtZero: true, ticks: { callback: (v) => ru(v) } },
+            yPing: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: (v) => ru(v) } },
+            yState: { position: 'right', min: 0, max: 1, display: false, grid: { drawOnChartArea: false } }
+          },
+          plugins: {
+            legend: { display: true }
+          }
+        }
+      });
+    });
+  </script>
+</body>
+</html>

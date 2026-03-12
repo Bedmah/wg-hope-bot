@@ -5,9 +5,11 @@ import hashlib
 import os
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -49,6 +51,10 @@ def now_iso() -> str:
 
 def epoch_to_iso(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def server_time_str() -> str:
+    return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def db_conn() -> sqlite3.Connection:
@@ -157,6 +163,39 @@ def init_monitor_db() -> None:
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_samples(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                iface_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                region_codes TEXT NOT NULL,
+                state TEXT NOT NULL,
+                reason TEXT,
+                service_active INTEGER NOT NULL,
+                handshake_ts INTEGER NOT NULL,
+                ping_ms REAL,
+                rx_bytes INTEGER NOT NULL,
+                tx_bytes INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uplink_samples_iface_ts ON uplink_samples(iface_name, ts)")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_ts TEXT NOT NULL,
+                iface_name TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                details TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uplink_events_iface_ts ON uplink_events(iface_name, event_ts)")
+
         auth = conn.execute("SELECT id FROM monitor_auth WHERE id=1").fetchone()
         if not auth:
             salt, hashed = hash_password("admin")
@@ -222,6 +261,143 @@ def run_wg_dump() -> list[dict[str, Any]]:
             }
         )
     return peers
+
+
+def run_cmd(args: list[str]) -> tuple[int, str, str]:
+    proc = subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def list_uplink_interfaces(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT name, kind, service_name
+        FROM uplink_interfaces
+        ORDER BY name
+        """
+    ).fetchall()
+
+
+def interface_regions_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    rows = conn.execute("SELECT code, interface_name FROM uplink_regions ORDER BY code").fetchall()
+    for r in rows:
+        out.setdefault(r["interface_name"], []).append(r["code"])
+    return out
+
+
+def parse_latest_handshake(tool: str, iface: str) -> int:
+    rc, out, _ = run_cmd([tool, "show", iface, "latest-handshakes"])
+    if rc != 0 or not out:
+        return 0
+    latest = 0
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 2 and cols[1].isdigit():
+            latest = max(latest, int(cols[1]))
+    return latest
+
+
+def parse_transfer(tool: str, iface: str) -> tuple[int, int]:
+    rc, out, _ = run_cmd([tool, "show", iface, "transfer"])
+    if rc != 0 or not out:
+        return 0, 0
+    rx, tx = 0, 0
+    for line in out.splitlines():
+        cols = line.split()
+        if len(cols) >= 3 and cols[1].isdigit() and cols[2].isdigit():
+            rx += int(cols[1])
+            tx += int(cols[2])
+    return rx, tx
+
+
+def service_is_active(service_name: str) -> bool:
+    if not service_name:
+        return True
+    rc, out, _ = run_cmd(["systemctl", "is-active", service_name])
+    return rc == 0 and out.strip() == "active"
+
+
+def iface_ping_ms(iface: str) -> float | None:
+    rc, out, _ = run_cmd(["ping", "-I", iface, "-c", "1", "-W", "2", "1.1.1.1"])
+    if rc != 0 or not out:
+        return None
+    m = re.search(r"time=([0-9.]+)\s*ms", out)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
+
+
+def collect_uplink_once(conn: sqlite3.Connection, ts: str) -> None:
+    interfaces = list_uplink_interfaces(conn)
+    iface_regions = interface_regions_map(conn)
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+
+    for iface in interfaces:
+        name = iface["name"]
+        kind = iface["kind"]
+        service_name = iface["service_name"] or ""
+        regions = iface_regions.get(name, [])
+        region_codes = ",".join(regions)
+
+        link_ok = run_cmd(["ip", "link", "show", "dev", name])[0] == 0
+        service_ok = service_is_active(service_name)
+
+        tool = "wg"
+        if kind == "amneziawg":
+            tool = "awg" if shutil.which("awg") else "wg"
+        handshake = parse_latest_handshake(tool, name) if link_ok else 0
+        rx, tx = parse_transfer(tool, name) if link_ok else (0, 0)
+        ping_ms = iface_ping_ms(name) if link_ok else None
+
+        state = "ok"
+        reasons: list[str] = []
+        if not link_ok:
+            state = "down"
+            reasons.append("link_missing")
+        if not service_ok:
+            state = "down"
+            reasons.append("service_inactive")
+        if kind != "system":
+            stale = handshake <= 0 or (now_epoch - handshake > max(60, MONITOR_POLL_SEC * 3))
+            if stale and ping_ms is None:
+                state = "down"
+                reasons.append("stale_handshake")
+        reason = ",".join(reasons) if reasons else ""
+
+        conn.execute(
+            """
+            INSERT INTO uplink_samples(
+                ts, iface_name, kind, region_codes, state, reason, service_active, handshake_ts, ping_ms, rx_bytes, tx_bytes
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                ts,
+                name,
+                kind,
+                region_codes,
+                state,
+                reason,
+                1 if service_ok else 0,
+                int(handshake),
+                ping_ms,
+                int(rx),
+                int(tx),
+            ),
+        )
+
+        prev = conn.execute(
+            "SELECT state FROM uplink_samples WHERE iface_name=? ORDER BY id DESC LIMIT 1 OFFSET 1",
+            (name,),
+        ).fetchone()
+        if prev and prev["state"] != state:
+            conn.execute(
+                "INSERT INTO uplink_events(event_ts, iface_name, event_type, details) VALUES(?,?,?,?)",
+                (ts, name, "state_change", f"{prev['state']} -> {state}; {reason}"),
+            )
 
 
 def resolve_domain(conn: sqlite3.Connection, ip: str) -> str:
@@ -405,8 +581,12 @@ def collect_once() -> None:
                 ),
             )
 
+        collect_uplink_once(conn, ts)
+
         conn.execute("DELETE FROM wg_peer_samples WHERE ts < ?", (keep_before,))
         conn.execute("DELETE FROM wg_peer_events WHERE event_ts < ?", (keep_before,))
+        conn.execute("DELETE FROM uplink_samples WHERE ts < ?", (keep_before,))
+        conn.execute("DELETE FROM uplink_events WHERE event_ts < ?", (keep_before,))
         conn.commit()
 
 
@@ -619,7 +799,14 @@ def load_dashboard() -> list[dict[str, Any]]:
         users = conn.execute(
             "SELECT chat_id, role, username, first_name, last_name, created_at, last_seen, max_clients FROM users ORDER BY created_at"
         ).fetchall()
-        clients = conn.execute("SELECT owner_chat_id, name, ip, pub, created_at FROM clients ORDER BY created_at DESC").fetchall()
+        clients = conn.execute(
+            """
+            SELECT c.owner_chat_id, c.name, c.ip, c.pub, c.created_at, c.region, COALESCE(NULLIF(r.label, ''), c.region) AS region_label
+            FROM clients c
+            LEFT JOIN uplink_regions r ON r.code = c.region
+            ORDER BY c.created_at DESC
+            """
+        ).fetchall()
         by_owner: dict[str, list[sqlite3.Row]] = {}
         for c in clients:
             by_owner.setdefault(c["owner_chat_id"], []).append(c)
@@ -630,6 +817,7 @@ def load_dashboard() -> list[dict[str, Any]]:
             chat_id = u["chat_id"]
             rows = by_owner.get(chat_id, [])
             total_rx, total_tx, h24, h7d, last_hs, active24 = 0, 0, 0, 0, 0, 0
+            cfg_regions = [f"{c['name']} -> {c['region_label']}" for c in rows]
             for c in rows:
                 sample = latest.get(c["pub"])
                 if sample:
@@ -656,6 +844,7 @@ def load_dashboard() -> list[dict[str, Any]]:
                     "last_handshake": epoch_to_iso(last_hs) if last_hs > 0 else "-",
                     "last_seen": u["last_seen"] or "-",
                     "top_destinations": ", ".join(top_destinations_for_owner(conn, chat_id, 24, 3)) or "-",
+                    "configs_regions": " | ".join(cfg_regions) if cfg_regions else "-",
                 }
             )
         return out
@@ -680,7 +869,13 @@ def load_user_detail(
             return None
 
         clients = conn.execute(
-            "SELECT name, ip, pub, created_at FROM clients WHERE owner_chat_id=? ORDER BY created_at DESC",
+            """
+            SELECT c.name, c.ip, c.pub, c.created_at, c.region, COALESCE(NULLIF(r.label, ''), c.region) AS region_label
+            FROM clients c
+            LEFT JOIN uplink_regions r ON r.code = c.region
+            WHERE c.owner_chat_id=?
+            ORDER BY c.created_at DESC
+            """,
             (chat_id,),
         ).fetchall()
         latest = get_latest_samples(conn)
@@ -710,6 +905,8 @@ def load_user_detail(
                     "name": c["name"],
                     "ip": c["ip"],
                     "pub": c["pub"],
+                    "region": c["region"],
+                    "region_label": c["region_label"],
                     "created_at": c["created_at"],
                     "endpoint": sample["endpoint"] if sample else "-",
                     "latest_handshake": epoch_to_iso(int(sample["latest_handshake"])) if sample and int(sample["latest_handshake"]) > 0 else "-",
@@ -741,7 +938,9 @@ def load_user_detail(
             )
 
         events: list[dict[str, Any]] = []
-        if peer_pubs:
+        region_labels = {r["code"]: r["label"] for r in conn.execute("SELECT code, label FROM uplink_regions").fetchall()}
+
+        if peer_pubs and event_type in ("", "handshake", "endpoint_change", "traffic"):
             where = [f"peer_pub IN ({','.join('?' for _ in peer_pubs)})"]
             params: list[Any] = list(peer_pubs)
             if config_name:
@@ -763,7 +962,7 @@ def load_user_detail(
                 FROM wg_peer_events
                 WHERE {' AND '.join(where)}
                 ORDER BY id DESC
-                LIMIT 300
+                LIMIT 500
                 """,
                 tuple(params),
             ).fetchall()
@@ -778,6 +977,52 @@ def load_user_detail(
                         "config_name": cfg,
                     }
                 )
+
+        if event_type in ("", "region_change"):
+            rows = conn.execute(
+                """
+                SELECT ts, details
+                FROM logs
+                WHERE target_chat_id=? AND action='client_region_set'
+                ORDER BY id DESC
+                LIMIT 500
+                """,
+                (chat_id,),
+            ).fetchall()
+            for r in rows:
+                details_raw = r["details"] or ""
+                name_m = re.search(r"(?:^|\\s)name=([^\\s]+)", details_raw)
+                cfg_name = name_m.group(1) if name_m else "-"
+                if config_name and cfg_name != config_name:
+                    continue
+
+                old_m = re.search(r"(?:^|\\s)old_region=([^\\s]+)", details_raw)
+                new_m = re.search(r"(?:^|\\s)new_region=([^\\s]+)", details_raw)
+                reg_m = re.search(r"(?:^|\\s)region=([^\\s]+)", details_raw)
+                old_code = old_m.group(1) if old_m else ""
+                new_code = new_m.group(1) if new_m else (reg_m.group(1) if reg_m else "")
+                old_label = region_labels.get(old_code, old_code) if old_code else ""
+                new_label = region_labels.get(new_code, new_code) if new_code else ""
+                if old_label and new_label:
+                    details = f"Смена региона: {old_label} -> {new_label}"
+                elif new_label:
+                    details = f"Выбран регион: {new_label}"
+                else:
+                    details = details_raw
+
+                if q and q.lower() not in f"{cfg_name} {details} {details_raw}".lower():
+                    continue
+                events.append(
+                    {
+                        "event_ts": r["ts"],
+                        "peer_pub": "-",
+                        "event_type": "region_change",
+                        "details": details,
+                        "config_name": cfg_name,
+                    }
+                )
+
+        events.sort(key=lambda x: parse_iso(x["event_ts"]) if x.get("event_ts") else datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
         events_per_page = 100
         total_events = len(events)
@@ -837,7 +1082,7 @@ def load_user_detail(
             "user_speed_peak_mbps_fmt": fmt2((max(user_speed_series_bps) / 1_000_000) if user_speed_series_bps else 0.0),
             "user_handshake_total": sum(user_hs_series),
             "user_handshake_peak": max(user_hs_series) if user_hs_series else 0,
-            "event_types": ["", "handshake", "endpoint_change", "traffic"],
+            "event_types": ["", "handshake", "endpoint_change", "traffic", "region_change"],
             "config_filter_values": [""] + sorted([c["name"] for c in clients]),
             "filters": {
                 "q": q,
@@ -853,6 +1098,205 @@ def load_user_detail(
             "bucket_label": bucket_label_ru(bucket_seconds),
             "poll_seconds": MONITOR_POLL_SEC,
             "chat_file_exists": (CHAT_DIR / f"{chat_id}.log").exists(),
+        }
+
+
+def load_servers_data(period: str = "24h") -> dict[str, Any]:
+    with db_conn() as conn:
+        region_rows = conn.execute(
+            """
+            SELECT r.code, r.label, r.interface_name, r.is_default,
+                   COUNT(c.id) AS configs_count,
+                   COUNT(DISTINCT c.owner_chat_id) AS users_count
+            FROM uplink_regions r
+            LEFT JOIN clients c ON c.region = r.code
+            GROUP BY r.code, r.label, r.interface_name, r.is_default
+            ORDER BY r.label
+            """
+        ).fetchall()
+        regions: list[dict[str, Any]] = []
+        for r in region_rows:
+            users = conn.execute(
+                """
+                SELECT u.chat_id, COALESCE(NULLIF(u.username,''), u.first_name, u.chat_id) AS title, COUNT(c.id) AS configs
+                FROM clients c
+                JOIN users u ON u.chat_id = c.owner_chat_id
+                WHERE c.region=?
+                GROUP BY u.chat_id, title
+                ORDER BY configs DESC, title
+                LIMIT 20
+                """,
+                (r["code"],),
+            ).fetchall()
+            regions.append(
+                {
+                    "code": r["code"],
+                    "label": r["label"],
+                    "interface_name": r["interface_name"],
+                    "is_default": int(r["is_default"]) == 1,
+                    "configs_count": int(r["configs_count"] or 0),
+                    "users_count": int(r["users_count"] or 0),
+                    "users": [dict(x) for x in users],
+                }
+            )
+
+        iface_rows = conn.execute(
+            """
+            SELECT i.name, i.kind, i.service_name, i.table_id, i.enabled,
+                   h.is_ok AS is_ok,
+                   h.details AS health_details,
+                   h.updated_at AS health_updated_at
+            FROM uplink_interfaces i
+            LEFT JOIN uplink_health h ON h.interface_name=i.name
+            ORDER BY i.name
+            """
+        ).fetchall()
+        iface_regions = interface_regions_map(conn)
+
+        if period == "1h":
+            since_dt = datetime.now(timezone.utc) - timedelta(hours=1)
+            bucket_seconds = 60
+        elif period == "7d":
+            since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+            bucket_seconds = 6 * 3600
+        else:
+            since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+            bucket_seconds = 300
+        since_iso = since_dt.isoformat().replace("+00:00", "Z")
+
+        by_iface: dict[str, list[sqlite3.Row]] = {}
+        for r in conn.execute(
+            "SELECT * FROM uplink_samples WHERE ts>=? ORDER BY iface_name, id ASC",
+            (since_iso,),
+        ).fetchall():
+            by_iface.setdefault(r["iface_name"], []).append(r)
+
+        interfaces: list[dict[str, Any]] = []
+        for iface in iface_rows:
+            name = iface["name"]
+            rows = by_iface.get(name, [])
+            latest = rows[-1] if rows else None
+            prev = rows[-2] if len(rows) >= 2 else None
+            if iface["is_ok"] is None:
+                if latest:
+                    iface_ok = (latest["state"] == "ok")
+                else:
+                    iface_ok = (iface["kind"] == "system")
+            else:
+                iface_ok = int(iface["is_ok"]) == 1
+            health_details = (iface["health_details"] or "").strip()
+            if not health_details and latest:
+                health_details = latest["reason"] or ("sample_state=ok" if latest["state"] == "ok" else "sample_state=down")
+            if not health_details:
+                health_details = "-"
+
+            rx_rate = 0.0
+            tx_rate = 0.0
+            if latest and prev:
+                try:
+                    t1 = parse_iso(prev["ts"])
+                    t2 = parse_iso(latest["ts"])
+                    dt = max((t2 - t1).total_seconds(), 1.0)
+                    d_rx = int(latest["rx_bytes"]) - int(prev["rx_bytes"])
+                    d_tx = int(latest["tx_bytes"]) - int(prev["tx_bytes"])
+                    if d_rx < 0:
+                        d_rx = int(latest["rx_bytes"])
+                    if d_tx < 0:
+                        d_tx = int(latest["tx_bytes"])
+                    rx_rate = (d_rx * 8.0) / dt
+                    tx_rate = (d_tx * 8.0) / dt
+                except Exception:
+                    pass
+
+            # Buckets for charts.
+            if rows:
+                start = parse_iso(rows[0]["ts"])
+            else:
+                start = since_dt
+            now = datetime.now(timezone.utc)
+            total_seconds = max(int((now - start).total_seconds()), bucket_seconds)
+            bucket_count = max(min((total_seconds // bucket_seconds) + 1, 400), 1)
+            start = now - timedelta(seconds=(bucket_count - 1) * bucket_seconds)
+            labels = make_labels(start, bucket_seconds, bucket_count)
+            speed_mbps = [0.0] * bucket_count
+            ping_ms_series = [None] * bucket_count
+            state_series = [0] * bucket_count
+
+            last_rx = None
+            last_tx = None
+            last_ts = None
+            for r in rows:
+                dt = parse_iso(r["ts"])
+                idx = int((dt - start).total_seconds() // bucket_seconds)
+                if idx < 0 or idx >= bucket_count:
+                    last_rx = int(r["rx_bytes"])
+                    last_tx = int(r["tx_bytes"])
+                    last_ts = dt
+                    continue
+                state_series[idx] = 1 if r["state"] == "ok" else 0
+                if r["ping_ms"] is not None:
+                    ping_ms_series[idx] = float(r["ping_ms"])
+                if last_rx is not None and last_tx is not None and last_ts is not None:
+                    sec = max((dt - last_ts).total_seconds(), 1.0)
+                    d_rx = int(r["rx_bytes"]) - last_rx
+                    d_tx = int(r["tx_bytes"]) - last_tx
+                    if d_rx < 0:
+                        d_rx = int(r["rx_bytes"])
+                    if d_tx < 0:
+                        d_tx = int(r["tx_bytes"])
+                    speed_mbps[idx] = ((d_rx + d_tx) * 8.0 / sec) / 1_000_000
+                last_rx = int(r["rx_bytes"])
+                last_tx = int(r["tx_bytes"])
+                last_ts = dt
+
+            # Uptime % over selected period.
+            ok_count = sum(1 for x in state_series if x == 1)
+            uptime_pct = (ok_count / max(bucket_count, 1)) * 100.0
+
+            # Downtime intervals from events.
+            events = conn.execute(
+                """
+                SELECT event_ts, details
+                FROM uplink_events
+                WHERE iface_name=? AND event_type='state_change' AND event_ts>=?
+                ORDER BY event_ts DESC
+                LIMIT 100
+                """,
+                (name, since_iso),
+            ).fetchall()
+
+            interfaces.append(
+                {
+                    "name": name,
+                    "kind": iface["kind"],
+                    "table_id": iface["table_id"],
+                    "enabled": int(iface["enabled"]) == 1,
+                    "service_name": iface["service_name"] or "-",
+                    "regions": iface_regions.get(name, []),
+                    "is_ok": iface_ok,
+                    "health_details": health_details,
+                    "health_updated_at": iface["health_updated_at"] or "-",
+                    "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
+                    "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
+                    "rx_total": human_bytes(int(latest["rx_bytes"])) if latest else "0 B",
+                    "tx_total": human_bytes(int(latest["tx_bytes"])) if latest else "0 B",
+                    "rx_rate_mbps": round(rx_rate / 1_000_000, 2),
+                    "tx_rate_mbps": round(tx_rate / 1_000_000, 2),
+                    "uptime_pct": round(uptime_pct, 2),
+                    "labels": labels,
+                    "speed_mbps": [round(x, 3) for x in speed_mbps],
+                    "ping_ms_series": ping_ms_series,
+                    "state_series": state_series,
+                    "events": [dict(e) for e in events],
+                }
+            )
+
+        return {
+            "period": period,
+            "period_values": [("1h", "1 час"), ("24h", "24 часа"), ("7d", "7 дней")],
+            "regions": regions,
+            "interfaces": interfaces,
+            "updated_at": now_iso(),
         }
 
 
@@ -886,7 +1330,7 @@ async def on_shutdown() -> None:
 async def login_page(request: Request):
     if is_auth(request):
         return RedirectResponse("/", status_code=302)
-    return TEMPLATES.TemplateResponse("login.html", {"request": request, "error": ""})
+    return TEMPLATES.TemplateResponse("login.html", {"request": request, "error": "", "server_time": server_time_str()})
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -894,7 +1338,10 @@ async def login_submit(request: Request, username: str = Form(...), password: st
     if verify_credentials(username.strip(), password):
         request.session["auth_user"] = username.strip()
         return RedirectResponse("/", status_code=302)
-    return TEMPLATES.TemplateResponse("login.html", {"request": request, "error": "Неверный логин или пароль."})
+    return TEMPLATES.TemplateResponse(
+        "login.html",
+        {"request": request, "error": "Неверный логин или пароль.", "server_time": server_time_str()},
+    )
 
 
 @app.get("/logout")
@@ -914,6 +1361,24 @@ async def dashboard(request: Request):
             "users": load_dashboard(),
             "auth_user": request.session.get("auth_user", ""),
             "updated_at": now_iso(),
+            "server_time": server_time_str(),
+        },
+    )
+
+
+@app.get("/servers", response_class=HTMLResponse)
+async def servers(request: Request):
+    if not is_auth(request):
+        return redirect_login()
+    period = (request.query_params.get("period") or "24h").strip()
+    data = load_servers_data(period=period)
+    return TEMPLATES.TemplateResponse(
+        "servers.html",
+        {
+            "request": request,
+            "data": data,
+            "auth_user": request.session.get("auth_user", ""),
+            "server_time": server_time_str(),
         },
     )
 
@@ -944,7 +1409,10 @@ async def user_detail(request: Request, chat_id: str):
     )
     if not data:
         return RedirectResponse("/", status_code=302)
-    return TEMPLATES.TemplateResponse("user.html", {"request": request, "data": data, "auth_user": request.session.get("auth_user", "")})
+    return TEMPLATES.TemplateResponse(
+        "user.html",
+        {"request": request, "data": data, "auth_user": request.session.get("auth_user", ""), "server_time": server_time_str()},
+    )
 
 
 @app.get("/user/{chat_id}/chat")
@@ -961,7 +1429,10 @@ async def download_chat(request: Request, chat_id: str):
 async def settings_page(request: Request):
     if not is_auth(request):
         return redirect_login()
-    return TEMPLATES.TemplateResponse("settings.html", {"request": request, "error": "", "ok": "", "auth_user": request.session.get("auth_user", "")})
+    return TEMPLATES.TemplateResponse(
+        "settings.html",
+        {"request": request, "error": "", "ok": "", "auth_user": request.session.get("auth_user", ""), "server_time": server_time_str()},
+    )
 
 
 @app.post("/settings", response_class=HTMLResponse)
@@ -977,12 +1448,24 @@ async def settings_submit(
     if new_password != repeat_password:
         return TEMPLATES.TemplateResponse(
             "settings.html",
-            {"request": request, "error": "Новые пароли не совпадают.", "ok": "", "auth_user": request.session.get("auth_user", "")},
+            {
+                "request": request,
+                "error": "Новые пароли не совпадают.",
+                "ok": "",
+                "auth_user": request.session.get("auth_user", ""),
+                "server_time": server_time_str(),
+            },
         )
     ok, msg = change_credentials(current_password, new_username, new_password)
     if ok:
         request.session["auth_user"] = new_username.strip()
     return TEMPLATES.TemplateResponse(
         "settings.html",
-        {"request": request, "error": "" if ok else msg, "ok": msg if ok else "", "auth_user": request.session.get("auth_user", "")},
+        {
+            "request": request,
+            "error": "" if ok else msg,
+            "ok": msg if ok else "",
+            "auth_user": request.session.get("auth_user", ""),
+            "server_time": server_time_str(),
+        },
     )

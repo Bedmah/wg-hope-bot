@@ -33,7 +33,9 @@
       <span class="muted">роль: {{ data.user.role }}</span>
     </div>
     <div class="links">
-      <a href="/">Панель</a>
+      <span class="muted">Время сервера: {{ server_time }}</span>
+      <a href="/">Пользователи</a>
+      <a href="/servers">Серверы</a>
       <a href="/settings">Настройки</a>
       <a href="/logout">Выйти</a>
     </div>
@@ -54,6 +56,7 @@
         <tr>
           <th>Конфиг</th>
           <th>IP</th>
+          <th>Регион</th>
           <th>Endpoint</th>
           <th>Последний handshake</th>
           <th>RX всего</th>
@@ -71,6 +74,7 @@
         <tr>
           <td>{{ c.name }}</td>
           <td>{{ c.ip }}</td>
+          <td>{{ c.region_label }}</td>
           <td>{{ c.endpoint }}</td>
           <td>{{ c.latest_handshake }}</td>
           <td>{{ c.rx_total }}</td>
@@ -153,7 +157,7 @@
     </div>
     {% endif %}
 
-    <h3>Последние события (с привязкой к конфигам)</h3>
+    <h3>Последние события</h3>
     <div class="filters" style="margin-bottom:8px;">
       <div class="muted">Всего событий: {{ data.events_total }}</div>
       {% if not data.events_show_all and data.events_total > 20 %}

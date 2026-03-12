@@ -4,6 +4,8 @@ from telegram.ext import Application
 
 from . import db
 from .handlers import register_handlers
+from .monitoring import HEALTHCHECK_INTERVAL_SEC, run_uplink_healthcheck
+from .routing import sync_client_egress_routes
 from .settings import BOT_TOKEN, SERVER_PUBLIC_KEY, SERVER_ENDPOINT
 
 
@@ -16,9 +18,16 @@ def run() -> None:
         raise SystemExit("Set SERVER_ENDPOINT")
 
     db.init()
+    try:
+        sync_client_egress_routes()
+    except Exception:
+        # Bot should still start even if route sync temporarily fails.
+        pass
 
     app = Application.builder().token(BOT_TOKEN).build()
     register_handlers(app)
+    if app.job_queue:
+        app.job_queue.run_repeating(run_uplink_healthcheck, interval=HEALTHCHECK_INTERVAL_SEC, first=20)
     app.run_polling(close_loop=False)
 
 
