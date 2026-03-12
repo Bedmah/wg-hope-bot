@@ -1,4 +1,4 @@
-version: "3.9"
+﻿version: "3.9"
 
 services:
   wg-bot:
@@ -16,14 +16,17 @@ services:
       BOT_TOKEN: ${BOT_TOKEN}
       SUPER_OWNER_CHAT_ID: ${SUPER_OWNER_CHAT_ID}
       WG_INTERFACE: ${WG_INTERFACE:-wg0}
+      WG_CONF: ${WG_CONF:-/etc/wireguard/wg0.conf}
       SERVER_PUBLIC_KEY: ${SERVER_PUBLIC_KEY}
       SERVER_ENDPOINT: ${SERVER_ENDPOINT}
-      VPN_SUBNET: ${VPN_SUBNET:-10.8.1.0/24}
+      VPN_SUBNET: ${VPN_SUBNET:-10.8.0.0/24}
       DNS_IP: ${DNS_IP:-1.1.1.1}
       KEEPALIVE: ${KEEPALIVE:-25}
       CLIENTS_DIR: /opt/wg-bot/clients
-      ALLOWED_IPS: ${ALLOWED_IPS:-0.0.0.0/0,::/0}
-      MTU: ${MTU:-1420}
-      AMNEZIA_ENDPOINT: ${AMNEZIA_ENDPOINT}
+      DB_PATH: /opt/wg-bot/clients/wg-bot.db
+      SUPPORT_HANDLE: ${SUPPORT_HANDLE:-@support}
+      DEFAULT_USER_LIMIT: ${DEFAULT_USER_LIMIT:-3}
+      ADMIN_LIMIT: ${ADMIN_LIMIT:-999}
     volumes:
       - ./data/clients:/opt/wg-bot/clients
+      - /etc/wireguard:/etc/wireguard
