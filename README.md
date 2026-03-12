@@ -41,6 +41,7 @@
 - `clients/` — клиентские конфиги/QR/метаданные
 - `deploy/systemd/` — шаблоны systemd-юнитов
 - `deploy/scripts/` — вспомогательные скрипты развёртывания
+- `deploy/SERVER_SETUP_PROD_v1.2.0.md` — пошаговая серверная настройка uplink/регионов/failover
 - `CHANGELOG.md` — история изменений
 
 ## ⚙️ Требования

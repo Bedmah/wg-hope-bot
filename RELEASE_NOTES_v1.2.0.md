@@ -108,6 +108,7 @@ journalctl -u wg-hope-monitor.service -n 50 --no-pager
   - `deploy/systemd/wg-hope-bot.service`
   - `deploy/systemd/wg-hope-monitor.service`
   - `deploy/scripts/install_prod_v1_2_0.sh`
+  - `deploy/SERVER_SETUP_PROD_v1.2.0.md` (полная серверная настройка uplink/регионов/failover)
 
 ## ⚠️ Важно
 
