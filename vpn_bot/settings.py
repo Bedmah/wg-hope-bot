@@ -18,9 +18,12 @@ CLIENTS_DIR = Path(os.environ.get("CLIENTS_DIR", BASE_DIR / "clients"))
 CLIENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = Path(os.environ.get("DB_PATH", CLIENTS_DIR / "wg-bot.db"))
+CHAT_DIR = Path(os.environ.get("CHAT_DIR", BASE_DIR / "chat"))
+CHAT_DIR.mkdir(parents=True, exist_ok=True)
 
 SUPER_OWNER_CHAT_ID = os.environ.get("SUPER_OWNER_CHAT_ID") or os.environ.get("ADMIN_CHAT_ID")
 SUPPORT_HANDLE = os.environ.get("SUPPORT_HANDLE", "@support")
 
 DEFAULT_USER_LIMIT = int(os.environ.get("DEFAULT_USER_LIMIT", "3"))
 ADMIN_LIMIT = int(os.environ.get("ADMIN_LIMIT", "999"))
+MONITOR_URL = os.environ.get("MONITOR_URL", "")

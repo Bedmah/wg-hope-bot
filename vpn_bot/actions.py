@@ -7,11 +7,12 @@ from pathlib import Path
 from telegram.ext import ContextTypes
 
 from . import db
+from . import chatlog
 from .qr import make_qr
 from .settings import CLIENTS_DIR, SUPPORT_HANDLE
 from .wireguard import run, allocate_ip, validate_ip, add_peer, remove_peer, remove_peer_block, build_client_config
 
-USER_GUIDE = (
+DEFAULT_USER_GUIDE = (
     "Инструкция по подключению:\n"
     "1) Нажми 'Добавить' и введи имя конфига.\n"
     "2) Получи файл .conf или QR от бота.\n"
@@ -20,11 +21,22 @@ USER_GUIDE = (
     "5) Если не работает, проверь время на устройстве, интернет и что UDP-порт сервера доступен."
 )
 
-SUPPORT_TEXT = f"Пиши сюда: {SUPPORT_HANDLE}"
+DEFAULT_SUPPORT_TEXT = f"Пиши сюда: {SUPPORT_HANDLE}"
+
+
+def get_user_guide() -> str:
+    return db.get_bot_text("user_guide", DEFAULT_USER_GUIDE)
+
+
+def get_support_text() -> str:
+    return db.get_bot_text("support_text", DEFAULT_SUPPORT_TEXT)
 
 
 def safe_name(name: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+    name = re.sub(r"\s+", "_", name.strip(), flags=re.UNICODE)
+    name = re.sub(r"[^\w.\-]", "_", name, flags=re.UNICODE)
+    name = re.sub(r"_+", "_", name)
+    return name.strip("._- ")
 
 
 def user_dir(chat_id: str) -> Path:
@@ -51,7 +63,28 @@ def files_from_stored(chat_id: str, stored_name: str) -> dict[str, Path]:
     return files
 
 
+def display_name_for(chat_id: str, stored_name: str) -> str:
+    files = files_from_stored(chat_id, stored_name)
+    meta = files.get("meta")
+    if meta and meta.exists():
+        try:
+            data = json.loads(meta.read_text(encoding="utf-8", errors="ignore"))
+            value = (data.get("display_name") or "").strip()
+            if value:
+                return value
+        except Exception:
+            pass
+
+    prefix = f"{chat_id}_"
+    if stored_name.startswith(prefix):
+        value = stored_name[len(prefix) :].strip()
+        if value:
+            return value
+    return stored_name
+
+
 async def say(context: ContextTypes.DEFAULT_TYPE, chat_id: str, text: str, kb=None) -> None:
+    chatlog.append(chat_id, "bot", text)
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
 
 
@@ -60,15 +93,17 @@ async def send_config_files(
     dst_chat_id: str,
     conf_path: Path,
     qr_path: Path,
-    stored_name: str,
+    display_name: str,
 ) -> None:
     if conf_path.exists():
+        chatlog.append(dst_chat_id, "bot", f"[document] {display_name}.conf")
         with conf_path.open("rb") as f:
-            await context.bot.send_document(chat_id=dst_chat_id, document=f, filename=f"{stored_name}.conf")
+            await context.bot.send_document(chat_id=dst_chat_id, document=f, filename=f"{display_name}.conf")
 
     if qr_path.exists():
+        chatlog.append(dst_chat_id, "bot", f"[photo] {display_name}.conf QR")
         with qr_path.open("rb") as f:
-            await context.bot.send_photo(chat_id=dst_chat_id, photo=f, caption=f"{stored_name}.conf QR")
+            await context.bot.send_photo(chat_id=dst_chat_id, photo=f, caption=f"{display_name}.conf QR")
 
 
 async def create_client(
@@ -82,8 +117,18 @@ async def create_client(
         if not name:
             await say(context, owner_chat_id, "Пустое имя. Введи название конфига еще раз.")
             return
+        if len(name) > 64:
+            await say(context, owner_chat_id, "Слишком длинное имя. Максимум 64 символа.")
+            return
 
         stored_name, files = files_for(owner_chat_id, name)
+        if not safe_name(name):
+            await say(
+                context,
+                owner_chat_id,
+                "Недопустимое имя. Используй буквы, цифры, пробел, ., -, _ (русский язык поддерживается).",
+            )
+            return
         if files["meta"].exists():
             await say(context, owner_chat_id, "Такой конфиг уже существует.")
             return
@@ -121,8 +166,8 @@ async def create_client(
             encoding="utf-8",
         )
 
-        await say(context, owner_chat_id, f"Готово. Конфиг: {stored_name} | IP: {ip}")
-        await send_config_files(context, owner_chat_id, files["conf"], files["qr"], stored_name)
+        await say(context, owner_chat_id, f"Готово. Конфиг: {name} | IP: {ip}")
+        await send_config_files(context, owner_chat_id, files["conf"], files["qr"], name)
     except Exception as exc:
         db.log_event("client_create_error", owner_chat_id, owner_chat_id, str(exc))
         await say(context, owner_chat_id, f"Ошибка при создании: {exc}")
@@ -139,7 +184,13 @@ async def send_client(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: str, st
         make_qr(files["conf"].read_text(encoding="utf-8", errors="ignore"), files["qr"])
 
     db.log_event("client_send", owner_chat_id, owner_chat_id, f"name={stored_name}")
-    await send_config_files(context, owner_chat_id, files["conf"], files["qr"], stored_name)
+    await send_config_files(
+        context,
+        owner_chat_id,
+        files["conf"],
+        files["qr"],
+        display_name_for(owner_chat_id, stored_name),
+    )
 
 
 async def send_client_to_admin(
@@ -158,7 +209,13 @@ async def send_client_to_admin(
         make_qr(files["conf"].read_text(encoding="utf-8", errors="ignore"), files["qr"])
 
     db.log_event("client_send_admin", admin_chat_id, owner_chat_id, f"name={stored_name}")
-    await send_config_files(context, admin_chat_id, files["conf"], files["qr"], stored_name)
+    await send_config_files(
+        context,
+        admin_chat_id,
+        files["conf"],
+        files["qr"],
+        display_name_for(owner_chat_id, stored_name),
+    )
 
 
 async def revoke_client(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: str, stored_name: str) -> None:
@@ -185,7 +242,7 @@ async def revoke_client(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: str, 
             pass
 
     db.log_event("client_revoke", owner_chat_id, owner_chat_id, f"name={stored_name}")
-    await say(context, owner_chat_id, f"Конфиг {stored_name} удален.")
+    await say(context, owner_chat_id, f"Конфиг {display_name_for(owner_chat_id, stored_name)} удален.")
 
 
 def purge_user_clients(owner_chat_id: str) -> int:

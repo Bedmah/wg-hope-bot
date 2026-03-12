@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WG Monitor - Настройки</title>
+  <style>
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; }
+    .links a { margin-left:10px; color:#1252b7; text-decoration:none; }
+    .wrap { max-width:520px; margin:20px auto; background:#fff; border:1px solid #dde4ee; border-radius:10px; padding:18px; }
+    h2 { margin:0 0 12px; }
+    label { display:block; margin-top:9px; font-size:13px; color:#4a5562; }
+    input { width:100%; box-sizing:border-box; margin-top:4px; padding:10px; border:1px solid #c8d0da; border-radius:8px; }
+    button { margin-top:14px; width:100%; padding:10px; border:none; border-radius:8px; background:#1459c5; color:#fff; font-weight:600; cursor:pointer; }
+    .err { color:#b11d1d; margin-top:10px; }
+    .ok { color:#1f7a31; margin-top:10px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div><strong>Настройки мониторинга</strong></div>
+    <div class="links">
+      <a href="/">Панель</a>
+      <a href="/logout">Выйти</a>
+    </div>
+  </div>
+  <div class="wrap">
+    <h2>Смена логина и пароля</h2>
+    <form method="post" action="/settings">
+      <label>Текущий пароль<input type="password" name="current_password" required /></label>
+      <label>Новый логин<input type="text" name="new_username" value="{{ auth_user }}" required /></label>
+      <label>Новый пароль<input type="password" name="new_password" required /></label>
+      <label>Повтор нового пароля<input type="password" name="repeat_password" required /></label>
+      <button type="submit">Сохранить</button>
+    </form>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    {% if ok %}<div class="ok">{{ ok }}</div>{% endif %}
+  </div>
+</body>
+</html>

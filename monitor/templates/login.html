@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WG Monitor - Вход</title>
+  <style>
+    body { font-family: Segoe UI, Arial, sans-serif; background:#f3f5f8; margin:0; }
+    .card { max-width:420px; margin:12vh auto; background:#fff; border:1px solid #d8dee6; border-radius:10px; padding:24px; }
+    h1 { margin:0 0 16px; font-size:22px; }
+    label { display:block; margin-top:10px; font-size:13px; color:#4a5562; }
+    input { width:100%; box-sizing:border-box; margin-top:4px; padding:10px; border:1px solid #c8d0da; border-radius:8px; }
+    button { margin-top:14px; width:100%; padding:10px; border:none; border-radius:8px; background:#1459c5; color:#fff; font-weight:600; cursor:pointer; }
+    .err { color:#b11d1d; margin-top:10px; }
+    .hint { margin-top:12px; color:#6a7583; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>WG Hope Monitor</h1>
+    <form method="post" action="/login">
+      <label>Логин<input type="text" name="username" required autofocus /></label>
+      <label>Пароль<input type="password" name="password" required /></label>
+      <button type="submit">Войти</button>
+    </form>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <div class="hint">По умолчанию: admin / admin</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WG Monitor - Панель</title>
+  <style>
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; }
+    .links a { margin-left:10px; color:#1252b7; text-decoration:none; }
+    .wrap { padding:16px 20px; }
+    table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #dde4ee; }
+    th, td { padding:9px 8px; border-bottom:1px solid #eef2f7; font-size:13px; text-align:left; vertical-align:top; }
+    th { background:#f1f5fa; }
+    tr:hover td { background:#fafcff; }
+    .muted { color:#6a7583; font-size:12px; }
+    .name a { color:#1252b7; text-decoration:none; font-weight:600; }
+    .role { font-size:12px; padding:2px 6px; border-radius:8px; background:#ebf2ff; display:inline-block; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <strong>WG Hope Monitor</strong>
+      <span class="muted">Обновлено: {{ updated_at }}</span>
+    </div>
+    <div class="links">
+      <span class="muted">Пользователь: {{ auth_user }}</span>
+      <a href="/settings">Настройки</a>
+      <a href="/logout">Выйти</a>
+    </div>
+  </div>
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Пользователь</th>
+          <th>chat_id</th>
+          <th>Роль</th>
+          <th>Конфиги</th>
+          <th>Активно 24ч</th>
+          <th>Handshake 24ч</th>
+          <th>Handshake 7д</th>
+          <th>RX (всего)</th>
+          <th>TX (всего)</th>
+          <th>Последний handshake</th>
+          <th>Последняя активность в боте</th>
+          <th>Топ назначения 24ч</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td class="name">
+            <a href="/user/{{ u.chat_id }}">
+              {% if u.username %}@{{ u.username }}{% elif u.full_name %}{{ u.full_name }}{% else %}(без имени){% endif %}
+            </a>
+          </td>
+          <td>{{ u.chat_id }}</td>
+          <td><span class="role">{{ u.role }}</span></td>
+          <td>{{ u.clients_count }}</td>
+          <td>{{ u.active_configs_24h }}</td>
+          <td>{{ u.handshakes_24h }}</td>
+          <td>{{ u.handshakes_7d }}</td>
+          <td>{{ u.total_rx }}</td>
+          <td>{{ u.total_tx }}</td>
+          <td>{{ u.last_handshake }}</td>
+          <td>{{ u.last_seen }}</td>
+          <td>{{ u.top_destinations }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

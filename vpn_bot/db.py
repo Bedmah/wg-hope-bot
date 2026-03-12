@@ -7,6 +7,7 @@ from typing import Iterable
 from .settings import DB_PATH, SUPER_OWNER_CHAT_ID, DEFAULT_USER_LIMIT, ADMIN_LIMIT
 
 ROLES = ("super_owner", "admin", "user", "pending", "banned")
+BOT_TEXT_KEYS = ("user_guide", "support_text")
 
 
 def now_iso() -> str:
@@ -118,6 +119,16 @@ def init() -> None:
             """
         )
 
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_settings(
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
         if SUPER_OWNER_CHAT_ID:
             row = cur.execute("SELECT chat_id FROM users WHERE chat_id=?", (SUPER_OWNER_CHAT_ID,)).fetchone()
             if row:
@@ -134,6 +145,23 @@ def init() -> None:
                     """,
                     (SUPER_OWNER_CHAT_ID, ts, ts, ADMIN_LIMIT, ts),
                 )
+
+        defaults = {
+            "user_guide": (
+                "Инструкция по подключению:\n"
+                "1) Нажми 'Добавить' и введи имя конфига.\n"
+                "2) Получи файл .conf или QR от бота.\n"
+                "3) Импортируй конфиг в приложение WireGuard (iOS/Android/Windows/macOS/Linux).\n"
+                "4) Активируй туннель.\n"
+                "5) Если не работает, проверь время на устройстве, интернет и что UDP-порт сервера доступен."
+            ),
+            "support_text": "Пиши сюда: @support",
+        }
+        for key, value in defaults.items():
+            cur.execute(
+                "INSERT OR IGNORE INTO bot_settings(key, value, updated_at) VALUES(?,?,?)",
+                (key, value, now_iso()),
+            )
 
         conn.commit()
 
@@ -208,9 +236,34 @@ def get_limit(chat_id: str) -> int:
         return int(row["max_clients"]) if row and row["max_clients"] is not None else DEFAULT_USER_LIMIT
 
 
-def set_limit(chat_id: str, limit: int) -> None:
+def set_limit(chat_id: str, limit: int) -> bool:
     with _db() as conn:
-        conn.execute("UPDATE users SET max_clients=?, updated_at=? WHERE chat_id=?", (int(limit), now_iso(), chat_id))
+        cur = conn.execute("UPDATE users SET max_clients=?, updated_at=? WHERE chat_id=?", (int(limit), now_iso(), chat_id))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_bot_text(key: str, fallback: str = "") -> str:
+    if key not in BOT_TEXT_KEYS:
+        return fallback
+    with _db() as conn:
+        row = conn.execute("SELECT value FROM bot_settings WHERE key=?", (key,)).fetchone()
+        if not row:
+            return fallback
+        return row["value"] or fallback
+
+
+def set_bot_text(key: str, value: str) -> None:
+    if key not in BOT_TEXT_KEYS:
+        raise ValueError("unknown bot text key")
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO bot_settings(key, value, updated_at) VALUES(?,?,?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, value, now_iso()),
+        )
         conn.commit()
 
 
@@ -222,6 +275,16 @@ def users_by_role(role_name: str):
             FROM users WHERE role=? ORDER BY created_at
             """,
             (role_name,),
+        ).fetchall()
+
+
+def all_users():
+    with _db() as conn:
+        return conn.execute(
+            """
+            SELECT chat_id, role, username, first_name, last_name, created_at, last_seen, max_clients
+            FROM users ORDER BY created_at
+            """
         ).fetchall()
 
 

@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WG Monitor - Пользователь {{ data.user.chat_id }}</title>
+  <style>
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; z-index:2; }
+    .links a { margin-left:10px; color:#1252b7; text-decoration:none; }
+    .wrap { padding:16px 20px; }
+    .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:10px; margin-bottom:14px; }
+    .card { background:#fff; border:1px solid #dde4ee; border-radius:10px; padding:10px 12px; font-size:13px; }
+    .k { color:#6a7583; font-size:12px; }
+    h3 { margin:18px 0 8px; }
+    table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #dde4ee; margin-bottom:16px; }
+    th, td { padding:8px; border-bottom:1px solid #eef2f7; font-size:13px; text-align:left; vertical-align:top; }
+    th { background:#f1f5fa; }
+    .btn { display:inline-block; background:#1459c5; color:#fff; text-decoration:none; padding:8px 10px; border-radius:8px; font-size:13px; border:none; cursor:pointer; }
+    .btn-muted { background:#4b5d77; }
+    .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; background:#fff; border:1px solid #dde4ee; padding:10px; border-radius:10px; margin-bottom:10px; }
+    .filters input, .filters select { padding:8px; border:1px solid #c8d0da; border-radius:8px; font-size:13px; }
+    .muted { color:#6a7583; font-size:12px; }
+    .chart-wrap { background:#fff; border:1px solid #dde4ee; border-radius:10px; padding:10px; margin-bottom:10px; overflow-x:auto; }
+    .chart-meta { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; font-size:12px; color:#425063; }
+    .cfg-chart { min-width:360px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div>
+      <strong>Пользователь {{ data.user.chat_id }}</strong>
+      <span class="muted">роль: {{ data.user.role }}</span>
+    </div>
+    <div class="links">
+      <a href="/">Панель</a>
+      <a href="/settings">Настройки</a>
+      <a href="/logout">Выйти</a>
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="cards">
+      <div class="card"><div class="k">Username</div><div>{% if data.user.username %}@{{ data.user.username }}{% else %}-{% endif %}</div></div>
+      <div class="card"><div class="k">Имя</div><div>{% if data.user.full_name %}{{ data.user.full_name }}{% else %}-{% endif %}</div></div>
+      <div class="card"><div class="k">Создан</div><div>{{ data.user.created_at }}</div></div>
+      <div class="card"><div class="k">Последняя активность в боте</div><div>{{ data.user.last_seen }}</div></div>
+      <div class="card"><div class="k">Лимит конфигов</div><div>{{ data.user.max_clients }}</div></div>
+      <div class="card"><div class="k">Лог чата</div><div>{% if data.chat_file_exists %}<a class="btn" href="/user/{{ data.user.chat_id }}/chat">Скачать</a>{% else %}нет файла{% endif %}</div></div>
+    </div>
+
+    <h3>Конфиги</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Конфиг</th>
+          <th>IP</th>
+          <th>Endpoint</th>
+          <th>Последний handshake</th>
+          <th>RX всего</th>
+          <th>TX всего</th>
+          <th>RX 24ч</th>
+          <th>TX 24ч</th>
+          <th>RX 7д</th>
+          <th>TX 7д</th>
+          <th>Handshake 24ч</th>
+          <th>Handshake 7д</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in data.configs %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td>{{ c.ip }}</td>
+          <td>{{ c.endpoint }}</td>
+          <td>{{ c.latest_handshake }}</td>
+          <td>{{ c.rx_total }}</td>
+          <td>{{ c.tx_total }}</td>
+          <td>{{ c.rx_24h }}</td>
+          <td>{{ c.tx_24h }}</td>
+          <td>{{ c.rx_7d }}</td>
+          <td>{{ c.tx_7d }}</td>
+          <td>{{ c.h24 }}</td>
+          <td>{{ c.h7d }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h3>Фильтры</h3>
+    <form class="filters" method="get" action="/user/{{ data.user.chat_id }}">
+      <input type="text" name="q" placeholder="Поиск по событиям" value="{{ data.filters.q }}" />
+      <select name="config_name">
+        {% for cfg in data.config_filter_values %}
+          <option value="{{ cfg }}" {% if data.filters.config_name == cfg %}selected{% endif %}>{% if cfg %}{{ cfg }}{% else %}Все конфиги{% endif %}</option>
+        {% endfor %}
+      </select>
+      <select name="event_type">
+        {% for et in data.event_types %}
+          <option value="{{ et }}" {% if data.filters.event_type == et %}selected{% endif %}>{% if et %}{{ et }}{% else %}Все события{% endif %}</option>
+        {% endfor %}
+      </select>
+      <select name="period">
+        {% for p in data.period_values %}
+          <option value="{{ p[0] }}" {% if data.filters.period == p[0] %}selected{% endif %}>{{ p[1] }}</option>
+        {% endfor %}
+      </select>
+      <select name="graph_scope">
+        {% for g in data.graph_scope_values %}
+          <option value="{{ g[0] }}" {% if data.filters.graph_scope == g[0] %}selected{% endif %}>{{ g[1] }}</option>
+        {% endfor %}
+      </select>
+      <input type="hidden" name="show_all_events" value="{{ data.filters.show_all_events }}" />
+      <button class="btn" type="submit">Применить</button>
+      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}">Сброс</a>
+    </form>
+    <div class="filters">
+      <div class="muted"><strong>Точность и ограничения:</strong> скорость на графиках — это средняя за бакет ({{ data.bucket_label }}), а не мгновенная. Сбор выполняется каждые {{ data.poll_seconds }} сек.</div>
+    </div>
+
+    {% if data.filters.graph_scope != "none" and data.filters.graph_scope != "config" %}
+    <h3>График пользователя ({{ data.filters.period }})</h3>
+    <div class="chart-wrap">
+      <div class="k">Трафик по бакетам + средняя скорость + handshake</div>
+      <canvas id="userCombinedChart" width="980" height="240"></canvas>
+      <div class="chart-meta">
+        <div>Трафик всего: <strong>{{ data.user_traffic_total_gb_fmt }} ГБ</strong></div>
+        <div>Пик трафика/бакет: <strong>{{ data.user_traffic_peak_gb_fmt }} ГБ</strong></div>
+        <div>Средний трафик/бакет: <strong>{{ data.user_traffic_avg_gb_fmt }} ГБ</strong></div>
+        <div>Пик скорости: <strong>{{ data.user_speed_peak_mbps_fmt }} Мбит/с</strong></div>
+        <div>Handshake всего: <strong>{{ data.user_handshake_total }}</strong></div>
+        <div>Пик handshake/бакет: <strong>{{ data.user_handshake_peak }}</strong></div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if data.filters.graph_scope != "none" and data.filters.graph_scope != "user" %}
+    <h3>Графики по конфигам ({{ data.filters.period }})</h3>
+    <div class="cards">
+      {% for c in data.configs %}
+      <div class="card cfg-chart">
+        <div><strong>{{ c.name }}</strong></div>
+        <canvas id="cfgChart{{ loop.index }}" width="360" height="190"></canvas>
+        <div class="chart-meta">
+          <div>Трафик всего: <strong>{{ c.traffic_total_gb_fmt }} ГБ</strong></div>
+          <div>Пик трафика/бакет: <strong>{{ c.traffic_peak_gb_fmt }} ГБ</strong></div>
+          <div>Средний трафик/бакет: <strong>{{ c.traffic_avg_gb_fmt }} ГБ</strong></div>
+          <div>Пик скорости: <strong>{{ c.speed_peak_mbps_fmt }} Мбит/с</strong></div>
+          <div>Handshake всего: <strong>{{ c.handshake_total }}</strong></div>
+          <div>Пик handshake/бакет: <strong>{{ c.handshake_peak }}</strong></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <h3>Последние события (с привязкой к конфигам)</h3>
+    <div class="filters" style="margin-bottom:8px;">
+      <div class="muted">Всего событий: {{ data.events_total }}</div>
+      {% if not data.events_show_all and data.events_total > 20 %}
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1">Показать всё</a>
+      {% endif %}
+      {% if data.events_show_all %}
+      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}">Свернуть до 20</a>
+      {% endif %}
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Время</th>
+          <th>Конфиг</th>
+          <th>Тип</th>
+          <th>Peer</th>
+          <th>Детали</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in data.events %}
+        <tr>
+          <td>{{ e.event_ts }}</td>
+          <td>{{ e.config_name }}</td>
+          <td>{{ e.event_type }}</td>
+          <td>{{ e.peer_pub }}</td>
+          <td>{{ e.details }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if data.events_show_all and data.events_total_pages > 1 %}
+    <div class="filters">
+      <div class="muted">Страница {{ data.events_page }} / {{ data.events_total_pages }}</div>
+      {% if data.events_page > 1 %}
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page - 1 }}">Назад</a>
+      {% endif %}
+      {% if data.events_page < data.events_total_pages %}
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page + 1 }}">Вперёд</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script>
+    const labels = {{ data.labels | tojson }};
+    const userTraffic = {{ data.user_traffic_series | tojson }}.map(v => +(v / (1024 ** 3)).toFixed(2));
+    const userSpeed = {{ data.user_speed_series_bps | tojson }}.map(v => +(v / 1_000_000).toFixed(2));
+    const userHs = {{ data.user_handshake_series | tojson }};
+    const ru = (v) => Number(v).toFixed(2).replace('.', ',');
+
+    const scope = {{ data.filters.graph_scope | tojson }};
+    if (scope !== "none" && scope !== "config") {
+      const n = document.getElementById('userCombinedChart');
+      if (n) {
+        new Chart(n, {
+          data: {
+            labels,
+            datasets: [
+              { type: 'bar', label: 'Трафик, ГБ/бакет', data: userTraffic, yAxisID: 'yGb', backgroundColor: 'rgba(31,103,210,0.42)' },
+              { type: 'line', label: 'Средняя скорость, Мбит/с', data: userSpeed, yAxisID: 'ySpeed', borderColor: '#e07a11', tension: 0.2, pointRadius: 1.5 },
+              { type: 'line', label: 'Handshake/бакет', data: userHs, yAxisID: 'yHs', borderColor: '#16925c', tension: 0.2, pointRadius: 1.5 }
+            ]
+          },
+          options: {
+            responsive: false,
+            maintainAspectRatio: true,
+            scales: {
+              yGb: {
+                position: 'left',
+                beginAtZero: true,
+                title: { display: true, text: 'ГБ' },
+                ticks: { callback: (v) => ru(v) }
+              },
+              ySpeed: {
+                position: 'right',
+                beginAtZero: true,
+                grid: { drawOnChartArea: false },
+                title: { display: true, text: 'Мбит/с' },
+                ticks: { callback: (v) => ru(v) }
+              },
+              yHs: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, display: false }
+            },
+            plugins: {
+              legend: { display: true },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const l = ctx.dataset.label || '';
+                    if (l.includes('ГБ') || l.includes('Мбит')) {
+                      return `${l}: ${ru(ctx.parsed.y)}`;
+                    }
+                    return `${l}: ${ctx.parsed.y}`;
+                  }
+                }
+              }
+            }
+          }
+        });
+      }
+    }
+
+    if (scope !== "none" && scope !== "user") {
+      const cfg = {{ data.configs | tojson }};
+      cfg.forEach((row, i) => {
+        const id = 'cfgChart' + (i + 1);
+        const node = document.getElementById(id);
+        if (!node) return;
+        const trafficGb = row.traffic_series.map(v => +(v / (1024 ** 3)).toFixed(4));
+        const speed = row.speed_series_bps.map(v => +(v / 1_000_000).toFixed(2));
+        new Chart(node, {
+          data: {
+            labels,
+            datasets: [
+              { type: 'bar', label: 'Трафик, ГБ', data: trafficGb, yAxisID: 'yGb', backgroundColor: 'rgba(45,108,223,0.46)' },
+              { type: 'line', label: 'Средняя скорость, Мбит/с', data: speed, yAxisID: 'ySpeed', borderColor: '#e48a1d', tension: 0.2, pointRadius: 1.2 },
+              { type: 'line', label: 'Handshake', data: row.handshake_series, yAxisID: 'yHs', borderColor: '#129a5a', tension: 0.2, pointRadius: 1.2 }
+            ]
+          },
+          options: {
+            responsive: false,
+            maintainAspectRatio: true,
+            scales: {
+              yGb: { position: 'left', beginAtZero: true, ticks: { callback: (v) => ru(v) } },
+              ySpeed: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: (v) => ru(v) } },
+              yHs: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, display: false }
+            },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const l = ctx.dataset.label || '';
+                    if (l.includes('ГБ') || l.includes('Мбит')) {
+                      return `${l}: ${ru(ctx.parsed.y)}`;
+                    }
+                    return `${l}: ${ctx.parsed.y}`;
+                  }
+                }
+              }
+            }
+          }
+        });
+      });
+    }
+  </script>
+</body>
+</html>
