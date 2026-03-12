@@ -40,6 +40,7 @@ from .keyboards import (
     admin_logs_menu,
     admin_customize_menu,
     admin_servers_menu,
+    cancel_menu,
     pending_menu,
     clients_kb,
     admin_user_clients_kb,
@@ -323,8 +324,8 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await say(
             context,
             chat_id,
-            "Введите название конфига (латиница/цифры, пробелы заменятся на _). Для отмены нажмите 'Назад'.",
-            main_menu_for(role),
+            "Введи название конфига",
+            cancel_menu(),
         )
         return
 

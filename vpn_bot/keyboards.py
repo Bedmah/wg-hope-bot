@@ -108,6 +108,10 @@ def pending_menu() -> ReplyKeyboardMarkup:
     )
 
 
+def cancel_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([[BUTTON_BACK]], resize_keyboard=True)
+
+
 def admin_customize_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [

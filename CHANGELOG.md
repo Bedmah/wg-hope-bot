@@ -1,4 +1,11 @@
-﻿# Changelog
+# Changelog
+
+## v1.2.1
+
+- UX improvement for config creation in Telegram bot:
+  - prompt changed to: "Enter config name" (RU locale string updated).
+  - config name input step now shows a dedicated keyboard with Back button.
+- Pressing Back now explicitly cancels config creation and returns to main menu.
 
 ## v1.2.0
 
