@@ -52,6 +52,13 @@ BUTTON_S_DEL_REGION = "Удалить регион"
 BUTTON_S_DEFAULT_REGION = "Регион по умолчанию"
 BUTTON_S_STATUS = "Проверить сервера"
 
+BUTTON_B_PENDING = "Ожидают"
+BUTTON_B_APPROVED = "Одобренные"
+BUTTON_B_BANNED = "Забаненные"
+BUTTON_B_ALL = "Все"
+BUTTON_B_ADD_IDS = "Добавить chat_id"
+BUTTON_B_NEXT = "Далее к тексту"
+
 
 def bottom_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     rows = [
@@ -132,6 +139,28 @@ def admin_servers_menu() -> ReplyKeyboardMarkup:
             [BUTTON_S_ADD_REGION, BUTTON_S_DEL_REGION],
             [BUTTON_S_DEFAULT_REGION, BUTTON_S_CFG_IFACE],
             [BUTTON_S_STATUS],
+            [BUTTON_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_broadcast_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_B_PENDING, BUTTON_B_APPROVED],
+            [BUTTON_B_BANNED, BUTTON_B_ALL],
+            [BUTTON_B_ADD_IDS],
+            [BUTTON_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_broadcast_confirm_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_B_ADD_IDS, BUTTON_B_NEXT],
             [BUTTON_BACK],
         ],
         resize_keyboard=True,

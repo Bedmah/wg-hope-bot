@@ -194,56 +194,69 @@ def init() -> None:
             cur.execute("UPDATE uplink_interfaces SET enabled=1 WHERE enabled IS NULL")
 
         ts = now_iso()
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
-            VALUES('eth0','system',NULL,NULL,NULL,1,?,?)
-            """,
-            (ts, ts),
-        )
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
-            VALUES('aw-lv','amneziawg','/etc/amnezia/amneziawg/aw-lv.conf','amnezia-awg@aw-lv.service',166,1,?,?)
-            """,
-            (ts, ts),
-        )
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
-            VALUES('aw-am','amneziawg','/etc/amnezia/amneziawg/aw-am.conf','amnezia-awg@aw-am.service',167,1,?,?)
-            """,
-            (ts, ts),
-        )
+        iface_count_row = cur.execute("SELECT COUNT(*) AS n FROM uplink_interfaces").fetchone()
+        iface_count = int(iface_count_row["n"]) if iface_count_row else 0
+        region_count_row = cur.execute("SELECT COUNT(*) AS n FROM uplink_regions").fetchone()
+        region_count = int(region_count_row["n"]) if region_count_row else 0
 
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (REGION_MOSCOW, "Москва", "eth0", 0, ts, ts),
-        )
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (REGION_LATVIA, "Латвия", "aw-lv", 1, ts, ts),
-        )
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
-            VALUES(?,?,?,?,?,?)
-            """,
-            (REGION_AMSTERDAM, "Амстердам", "aw-am", 0, ts, ts),
-        )
-        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Москва", REGION_MOSCOW))
-        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Латвия", REGION_LATVIA))
-        cur.execute("UPDATE uplink_regions SET label=? WHERE code=?", ("Амстердам", REGION_AMSTERDAM))
+        # Seed defaults only for a fresh DB, do not resurrect manually deleted entities on every restart.
+        if iface_count == 0:
+            cur.execute(
+                """
+                INSERT INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+                VALUES('eth0','system',NULL,NULL,NULL,1,?,?)
+                """,
+                (ts, ts),
+            )
+            cur.execute(
+                """
+                INSERT INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+                VALUES('aw-lv','amneziawg','/etc/amnezia/amneziawg/aw-lv.conf','amnezia-awg@aw-lv.service',166,1,?,?)
+                """,
+                (ts, ts),
+            )
+            cur.execute(
+                """
+                INSERT INTO uplink_interfaces(name, kind, config_path, service_name, table_id, enabled, created_at, updated_at)
+                VALUES('aw-am','amneziawg','/etc/amnezia/amneziawg/aw-am.conf','amnezia-awg@aw-am.service',167,1,?,?)
+                """,
+                (ts, ts),
+            )
+
+        if region_count == 0:
+            cur.execute(
+                """
+                INSERT INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (REGION_MOSCOW, "Москва", "eth0", 0, ts, ts),
+            )
+            cur.execute(
+                """
+                INSERT INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (REGION_LATVIA, "Латвия", "aw-lv", 1, ts, ts),
+            )
+            cur.execute(
+                """
+                INSERT INTO uplink_regions(code, label, interface_name, is_default, created_at, updated_at)
+                VALUES(?,?,?,?,?,?)
+                """,
+                (REGION_AMSTERDAM, "Амстердам", "aw-am", 0, ts, ts),
+            )
+
         default_row = cur.execute(
             "SELECT code FROM uplink_regions WHERE is_default=1 ORDER BY code LIMIT 1"
         ).fetchone()
-        default_code = default_row["code"] if default_row else REGION_DEFAULT
+        if default_row:
+            default_code = default_row["code"]
+        else:
+            first_region = cur.execute("SELECT code FROM uplink_regions ORDER BY code LIMIT 1").fetchone()
+            default_code = first_region["code"] if first_region else REGION_DEFAULT
+            if first_region:
+                cur.execute("UPDATE uplink_regions SET is_default=0")
+                cur.execute("UPDATE uplink_regions SET is_default=1, updated_at=? WHERE code=?", (now_iso(), default_code))
         valid_codes = {r["code"] for r in cur.execute("SELECT code FROM uplink_regions").fetchall()}
         for row in cur.execute("SELECT id, region FROM clients").fetchall():
             norm = normalize_region(row["region"])

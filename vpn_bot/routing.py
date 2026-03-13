@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from typing import Iterable
@@ -212,8 +213,48 @@ def _remove_legacy_rules() -> None:
     _run("ip", "-4", "rule", "del", "fwmark", "0x66", "table", "166", "priority", "1000", check=False)
 
 
+def _delete_rule_line(line: str, table: str = "filter") -> None:
+    line = line.strip()
+    if not line.startswith("-A "):
+        return
+    delete_line = "-D " + line[3:]
+    args = shlex.split(delete_line)
+    if not args:
+        return
+    _run("iptables", "-t", table, *args, check=False)
+
+
+def _cleanup_stale_iptables_rules() -> None:
+    # Remove managed-like forwarding/NAT rules for VPN subnet from old/deleted interfaces.
+    p_filter = _run("iptables", "-S", check=False)
+    if p_filter.returncode == 0:
+        for line in p_filter.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("-A FORWARD "):
+                continue
+            forward_from_vpn = f"-i {WG_INTERFACE}" in line and f"-s {VPN_SUBNET}" in line and "-o " in line
+            forward_to_vpn = (
+                f"-o {WG_INTERFACE}" in line
+                and f"-d {VPN_SUBNET}" in line
+                and "--ctstate RELATED,ESTABLISHED" in line
+                and "-i " in line
+            )
+            if forward_from_vpn or forward_to_vpn:
+                _delete_rule_line(line, table="filter")
+
+    p_nat = _run("iptables", "-t", "nat", "-S", check=False)
+    if p_nat.returncode == 0:
+        for line in p_nat.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("-A POSTROUTING "):
+                continue
+            if f"-s {VPN_SUBNET}" in line and "-o " in line and "-j MASQUERADE" in line:
+                _delete_rule_line(line, table="nat")
+
+
 def _sync_iptables() -> None:
     _remove_legacy_rules()
+    _cleanup_stale_iptables_rules()
 
     regions = _effective_regions_map()
     interfaces = _interface_map()

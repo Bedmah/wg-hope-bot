@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.2.2
+
+- Broadcast UX reworked in admin panel:
+  - added recipient groups: `pending`, `approved`, `banned`, `all`;
+  - added staged flow for broadcast target selection;
+  - added manual chat_id additions on top of group selection.
+- Broadcast delivery improved:
+  - support for sending `text`, `photo`, `video`, `document`;
+  - post-broadcast report now includes failed recipients with `chat_id`, `@username`, and error reason.
+- Routing stability hardening:
+  - cleanup of stale managed `iptables` rules before applying current state.
+- Uplink/region persistence fixes:
+  - removed automatic resurrection of deleted default regions/interfaces on each restart;
+  - default region auto-recovery when none is marked in DB.
+- Startup cleanup:
+  - removed package-level import pattern causing `RuntimeWarning` about `vpn_bot.main` execution order.
+
 ## v1.2.1
 
 - UX improvement for config creation in Telegram bot:

@@ -40,6 +40,8 @@ from .keyboards import (
     admin_logs_menu,
     admin_customize_menu,
     admin_servers_menu,
+    admin_broadcast_menu,
+    admin_broadcast_confirm_menu,
     cancel_menu,
     pending_menu,
     clients_kb,
@@ -90,6 +92,12 @@ from .keyboards import (
     BUTTON_S_DEL_REGION,
     BUTTON_S_DEFAULT_REGION,
     BUTTON_S_STATUS,
+    BUTTON_B_PENDING,
+    BUTTON_B_APPROVED,
+    BUTTON_B_BANNED,
+    BUTTON_B_ALL,
+    BUTTON_B_ADD_IDS,
+    BUTTON_B_NEXT,
 )
 from .settings import SUPER_OWNER_CHAT_ID, VPN_SUBNET, CHAT_DIR, MONITOR_URL
 
@@ -169,6 +177,126 @@ def regions_for_delete_text() -> tuple[str, list[tuple[str, str]]]:
         items.append((code, label))
         lines.append(f"- {label} [{code}] -> {row['interface_name']}{default_tag}")
     return "\n".join(lines), items
+
+
+def parse_chat_ids(raw: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in raw.replace(",", " ").split():
+        value = part.strip()
+        if not value.isdigit():
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def broadcast_targets_by_group(group: str) -> list[str]:
+    if group == "pending":
+        return [str(row["chat_id"]) for row in db.users_by_role("pending")]
+    if group == "banned":
+        return [str(row["chat_id"]) for row in db.users_by_role("banned")]
+    if group == "approved":
+        rows = db.users_by_role("super_owner") + db.users_by_role("admin") + db.users_by_role("user")
+        return [str(row["chat_id"]) for row in rows]
+    if group == "all":
+        return [str(row["chat_id"]) for row in db.all_users()]
+    return []
+
+
+def merge_targets(existing: list[str], incoming: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in existing + incoming:
+        chat_id = str(value).strip()
+        if not chat_id or chat_id in seen:
+            continue
+        seen.add(chat_id)
+        result.append(chat_id)
+    return result
+
+
+async def execute_broadcast(
+    context: ContextTypes.DEFAULT_TYPE,
+    actor_chat_id: str,
+    actor_role: str,
+    ui_menu: str,
+    targets: list[str],
+    *,
+    text: str | None = None,
+    photo_id: str | None = None,
+    video_id: str | None = None,
+    document_id: str | None = None,
+    caption: str | None = None,
+) -> None:
+    ok = 0
+    bad = 0
+    failed_rows: list[str] = []
+    users_map = {str(row["chat_id"]): row for row in db.all_users()}
+
+    for target in targets:
+        target_str = str(target)
+        username = "-"
+        row = users_map.get(target_str)
+        if row and row["username"]:
+            username = f"@{row['username']}"
+
+        try:
+            if text is not None:
+                chatlog.append(target_str, "bot", text)
+                await context.bot.send_message(chat_id=int(target_str), text=text)
+            elif photo_id:
+                chatlog.append(target_str, "bot", f"[broadcast photo] {caption or ''}".strip())
+                await context.bot.send_photo(chat_id=int(target_str), photo=photo_id, caption=caption or None)
+            elif video_id:
+                chatlog.append(target_str, "bot", f"[broadcast video] {caption or ''}".strip())
+                await context.bot.send_video(chat_id=int(target_str), video=video_id, caption=caption or None)
+            elif document_id:
+                chatlog.append(target_str, "bot", f"[broadcast document] {caption or ''}".strip())
+                await context.bot.send_document(chat_id=int(target_str), document=document_id, caption=caption or None)
+            else:
+                raise RuntimeError("unsupported broadcast payload")
+            ok += 1
+        except Exception as exc:
+            try:
+                chat = await context.bot.get_chat(chat_id=int(target_str))
+                chat_username = getattr(chat, "username", None)
+                if chat_username:
+                    username = f"@{chat_username}"
+            except Exception:
+                pass
+            bad += 1
+            reason = str(exc).strip() or exc.__class__.__name__
+            if len(reason) > 180:
+                reason = reason[:180] + "..."
+            failed_rows.append(f"- {target_str} | {username} | {reason}")
+
+    db.log_event("broadcast", actor_chat_id, None, f"targets={len(targets)} ok={ok} bad={bad}")
+    if not failed_rows:
+        await say(
+            context,
+            actor_chat_id,
+            f"Рассылка завершена. Успешно: {ok}, ошибок: {bad}.",
+            menu_for_ui(actor_role, ui_menu),
+        )
+        return
+
+    max_rows = 20
+    shown = failed_rows[:max_rows]
+    extra = len(failed_rows) - len(shown)
+    details = "\n".join(shown)
+    if extra > 0:
+        details += f"\n... и ещё {extra} ошибок."
+    await send_chunks(
+        context,
+        actor_chat_id,
+        f"Рассылка завершена. Успешно: {ok}, ошибок: {bad}.\n"
+        "Не отправлено:\n"
+        f"{details}",
+        menu_for_ui(actor_role, ui_menu),
+    )
 
 
 async def send_chunks(context: ContextTypes.DEFAULT_TYPE, chat_id: str, text: str, kb=None) -> None:
@@ -377,8 +505,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if is_adminish(role) and text == BUTTON_A_BROADCAST:
         context.user_data["ui_menu"] = "admin_main"
-        context.user_data["admin_mode"] = "broadcast_targets"
-        await say(context, chat_id, "Введи chat_id через пробел/запятую или 'all'. Для отмены: 'Назад'.", admin_menu_for(role))
+        context.user_data["admin_mode"] = "broadcast_pick"
+        context.user_data.pop("broadcast_targets", None)
+        await say(
+            context,
+            chat_id,
+            "Выбери группу получателей или добавь chat_id вручную.",
+            admin_broadcast_menu(),
+        )
         return
 
     if is_adminish(role) and text == BUTTON_A_LIMITS:
@@ -617,6 +751,78 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await say(context, chat_id, "Меню", menu_for_ui(role, ui_menu))
 
 
+async def on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = sync_user_profile(update)
+    db.touch_seen(chat_id)
+
+    role = db.role(chat_id)
+    if not is_adminish(role):
+        return
+
+    admin_mode = context.user_data.get("admin_mode")
+    if admin_mode != "broadcast_text":
+        return
+
+    targets = context.user_data.get("broadcast_targets", [])
+    if not targets:
+        context.user_data["admin_mode"] = "broadcast_pick"
+        await say(context, chat_id, "Список получателей пуст. Выбери группу или добавь chat_id.", admin_broadcast_menu())
+        return
+
+    message = update.message
+    if not message:
+        return
+
+    context.user_data.pop("broadcast_targets", None)
+    context.user_data["admin_mode"] = None
+    ui_menu = context.user_data.get("ui_menu", "admin_main")
+
+    if message.photo:
+        await execute_broadcast(
+            context,
+            chat_id,
+            role,
+            ui_menu,
+            targets,
+            photo_id=message.photo[-1].file_id,
+            caption=(message.caption or "").strip() or None,
+        )
+        return
+
+    if message.video:
+        await execute_broadcast(
+            context,
+            chat_id,
+            role,
+            ui_menu,
+            targets,
+            video_id=message.video.file_id,
+            caption=(message.caption or "").strip() or None,
+        )
+        return
+
+    if message.document:
+        await execute_broadcast(
+            context,
+            chat_id,
+            role,
+            ui_menu,
+            targets,
+            document_id=message.document.file_id,
+            caption=(message.caption or "").strip() or None,
+        )
+        return
+
+    context.user_data["admin_mode"] = "broadcast_text"
+    context.user_data["broadcast_targets"] = targets
+    await say(
+        context,
+        chat_id,
+        "Этот тип вложения пока не поддерживается для рассылки. Используй фото, видео, файл или текст.",
+        cancel_menu(),
+    )
+
+
 async def _handle_admin_mode(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -675,6 +881,113 @@ async def _handle_admin_mode(
         await say(context, chat_id, f"{target} теперь user.", menu_for_ui(actor_role, ui_menu))
         return True
 
+    if admin_mode == "broadcast_pick":
+        selected_group: str | None = None
+        if text == BUTTON_B_PENDING:
+            selected_group = "pending"
+        elif text == BUTTON_B_APPROVED:
+            selected_group = "approved"
+        elif text == BUTTON_B_BANNED:
+            selected_group = "banned"
+        elif text == BUTTON_B_ALL:
+            selected_group = "all"
+
+        if selected_group:
+            targets = broadcast_targets_by_group(selected_group)
+            context.user_data["broadcast_targets"] = targets
+            context.user_data["admin_mode"] = "broadcast_confirm"
+            await say(
+                context,
+                chat_id,
+                f"Группа выбрана. Получателей: {len(targets)}.\n"
+                "Можно добавить chat_id вручную или сразу перейти к тексту.",
+                admin_broadcast_confirm_menu(),
+            )
+            return True
+
+        if text == BUTTON_B_ADD_IDS:
+            context.user_data.setdefault("broadcast_targets", [])
+            context.user_data["admin_mode"] = "broadcast_add_ids"
+            await say(
+                context,
+                chat_id,
+                "Введи chat_id через пробел/запятую. Можно несколько значений за раз.",
+                cancel_menu(),
+            )
+            return True
+
+        # Legacy compatibility: allow old one-line target input in this mode.
+        raw = text.strip()
+        if raw.lower() == "all":
+            context.user_data["broadcast_targets"] = broadcast_targets_by_group("all")
+            context.user_data["admin_mode"] = "broadcast_text"
+            await say(
+                context,
+                chat_id,
+                f"Введи текст рассылки. Получателей: {len(context.user_data['broadcast_targets'])}. Для отмены: 'Назад'.",
+                menu_for_ui(actor_role, ui_menu),
+            )
+            return True
+        legacy_ids = parse_chat_ids(raw)
+        if legacy_ids:
+            context.user_data["broadcast_targets"] = legacy_ids
+            context.user_data["admin_mode"] = "broadcast_text"
+            await say(
+                context,
+                chat_id,
+                f"Введи текст рассылки. Получателей: {len(legacy_ids)}. Для отмены: 'Назад'.",
+                menu_for_ui(actor_role, ui_menu),
+            )
+            return True
+
+        await say(context, chat_id, "Выбери группу из кнопок или добавь chat_id вручную.", admin_broadcast_menu())
+        return True
+
+    if admin_mode == "broadcast_add_ids":
+        new_ids = parse_chat_ids(text)
+        if not new_ids:
+            await say(context, chat_id, "Не нашёл ни одного корректного chat_id. Попробуй ещё раз.", cancel_menu())
+            return True
+        current = context.user_data.get("broadcast_targets", [])
+        targets = merge_targets(current, new_ids)
+        context.user_data["broadcast_targets"] = targets
+        context.user_data["admin_mode"] = "broadcast_confirm"
+        await say(
+            context,
+            chat_id,
+            f"Добавлено chat_id: {len(new_ids)}. Всего получателей: {len(targets)}.\n"
+            "Можно добавить ещё chat_id или перейти к тексту.",
+            admin_broadcast_confirm_menu(),
+        )
+        return True
+
+    if admin_mode == "broadcast_confirm":
+        if text == BUTTON_B_ADD_IDS:
+            context.user_data["admin_mode"] = "broadcast_add_ids"
+            await say(
+                context,
+                chat_id,
+                "Введи chat_id через пробел/запятую. Можно несколько значений за раз.",
+                cancel_menu(),
+            )
+            return True
+        if text == BUTTON_B_NEXT:
+            targets = context.user_data.get("broadcast_targets", [])
+            if not targets:
+                await say(context, chat_id, "Список получателей пуст. Выбери группу или добавь chat_id.", admin_broadcast_menu())
+                context.user_data["admin_mode"] = "broadcast_pick"
+                return True
+            context.user_data["admin_mode"] = "broadcast_text"
+            await say(
+                context,
+                chat_id,
+                f"Введи текст рассылки. Получателей: {len(targets)}. Для отмены: 'Назад'.",
+                menu_for_ui(actor_role, ui_menu),
+            )
+            return True
+        await say(context, chat_id, "Используй кнопки: добавить chat_id или перейти к тексту.", admin_broadcast_confirm_menu())
+        return True
+
     if admin_mode == "broadcast_targets":
         raw = text.strip()
         if not raw:
@@ -683,9 +996,9 @@ async def _handle_admin_mode(
             return True
 
         if raw.lower() == "all":
-            targets = db.approved_chat_ids()
+            targets = broadcast_targets_by_group("all")
         else:
-            targets = [part for part in raw.replace(",", " ").split() if part]
+            targets = parse_chat_ids(raw)
 
         context.user_data["broadcast_targets"] = targets
         context.user_data["admin_mode"] = "broadcast_text"
@@ -694,20 +1007,20 @@ async def _handle_admin_mode(
 
     if admin_mode == "broadcast_text":
         targets = context.user_data.get("broadcast_targets", [])
-        ok = 0
-        bad = 0
-        for target in targets:
-            try:
-                chatlog.append(str(target), "bot", text)
-                await context.bot.send_message(chat_id=int(target), text=text)
-                ok += 1
-            except Exception:
-                bad += 1
-
+        if not targets:
+            context.user_data["admin_mode"] = "broadcast_pick"
+            await say(context, chat_id, "Список получателей пуст. Выбери группу или добавь chat_id.", admin_broadcast_menu())
+            return True
         context.user_data.pop("broadcast_targets", None)
         context.user_data["admin_mode"] = None
-        db.log_event("broadcast", chat_id, None, f"targets={len(targets)} ok={ok} bad={bad}")
-        await say(context, chat_id, f"Рассылка завершена. Успешно: {ok}, ошибок: {bad}.", menu_for_ui(actor_role, ui_menu))
+        await execute_broadcast(
+            context,
+            chat_id,
+            actor_role,
+            ui_menu,
+            targets,
+            text=text,
+        )
         return True
 
     if admin_mode == "ban_target":
@@ -1183,8 +1496,14 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if data == "u_broadcast":
         context.user_data["ui_menu"] = "admin_main"
-        context.user_data["admin_mode"] = "broadcast_targets"
-        await say(context, chat_id, "Введи chat_id через пробел/запятую или 'all'. Для отмены: 'Назад'.", admin_menu_for(role))
+        context.user_data["admin_mode"] = "broadcast_pick"
+        context.user_data.pop("broadcast_targets", None)
+        await say(
+            context,
+            chat_id,
+            "Выбери группу получателей или добавь chat_id вручную.",
+            admin_broadcast_menu(),
+        )
         return
 
     if data == "u_limit":
@@ -1301,3 +1620,4 @@ def register_handlers(app) -> None:
     app.add_handler(CommandHandler("add", cmd_add))
     app.add_handler(CallbackQueryHandler(on_inline))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.Document.ALL, on_media))
