@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.2.3
+
+- Production hardening for dynamic uplink interfaces/regions:
+  - added forced `Table = off` normalization for VPN uplink configs during replace flow to prevent default route hijack;
+  - added systemd service sync for uplinks on bot startup (`enable/start` for enabled interfaces, `stop/disable` for disabled ones);
+  - ensured newly enabled uplink services are started immediately and survive reboot.
+- Routing and region safety improvements:
+  - routing now ignores disabled uplink interfaces (`enabled=0`);
+  - region assignment now rejects disabled interfaces and rejects non-ready VPN uplinks;
+  - interface status now includes stale-handshake probing (`probe=ok|fail`) to reduce false positives.
+- Monitoring/recovery improvements:
+  - improved startup alert behavior for previously down uplinks (`UPLINK_ALERT_DOWN_ON_START`, default enabled);
+  - fixed state transitions so recovery updates `last_alert_state=ok` correctly after interface restoration.
+- Network/subnet/domain related production updates consolidated:
+  - defaults updated to `VPN_SUBNET=10.8.0.0/22` in project settings/templates;
+  - bot systemd launch updated to direct `bot.py` execution for cleaner startup behavior.
+- Operational reliability outcomes:
+  - verified repeated reboot scenarios: uplink auto-start, policy routing persistence, and no fallback drift to unintended region when target uplink is healthy.
+
 ## v1.2.2
 
 - Broadcast UX reworked in admin panel:

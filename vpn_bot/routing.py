@@ -142,7 +142,7 @@ def _regions_map() -> dict[str, str]:
 
 
 def _interface_map() -> dict[str, dict]:
-    return {row["name"]: dict(row) for row in db.list_uplink_interfaces()}
+    return {row["name"]: dict(row) for row in db.list_uplink_interfaces() if int(row["enabled"]) == 1}
 
 
 def _fallback_interface_name(regions: dict[str, str], interfaces: dict[str, dict]) -> str | None:
@@ -232,12 +232,13 @@ def _cleanup_stale_iptables_rules() -> None:
             line = line.strip()
             if not line.startswith("-A FORWARD "):
                 continue
-            forward_from_vpn = f"-i {WG_INTERFACE}" in line and f"-s {VPN_SUBNET}" in line and "-o " in line
+            # Managed forward rules are interface-pair specific, keep generic wg-quick FORWARD accepts intact.
+            forward_from_vpn = f"-i {WG_INTERFACE}" in line and "-o " in line and "-s " in line
             forward_to_vpn = (
                 f"-o {WG_INTERFACE}" in line
-                and f"-d {VPN_SUBNET}" in line
-                and "--ctstate RELATED,ESTABLISHED" in line
                 and "-i " in line
+                and "-d " in line
+                and "--ctstate RELATED,ESTABLISHED" in line
             )
             if forward_from_vpn or forward_to_vpn:
                 _delete_rule_line(line, table="filter")
@@ -248,7 +249,8 @@ def _cleanup_stale_iptables_rules() -> None:
             line = line.strip()
             if not line.startswith("-A POSTROUTING "):
                 continue
-            if f"-s {VPN_SUBNET}" in line and "-o " in line and "-j MASQUERADE" in line:
+            # Keep generic wg-quick masquerade (-o eth0 -j MASQUERADE), drop bot-managed source-specific ones.
+            if "-s " in line and "-o " in line and "-j MASQUERADE" in line:
                 _delete_rule_line(line, table="nat")
 
 
@@ -271,6 +273,8 @@ def sync_client_egress_routes() -> None:
     if not _require_tools():
         return
     for iface in db.list_uplink_interfaces():
+        if int(iface["enabled"]) != 1:
+            continue
         table_id = iface["table_id"]
         if table_id is None:
             continue

@@ -15,6 +15,7 @@ HEALTHCHECK_INTERVAL_SEC = int(os.environ.get("UPLINK_HEALTHCHECK_INTERVAL_SEC",
 HANDSHAKE_STALE_SEC = int(os.environ.get("UPLINK_HANDSHAKE_STALE_SEC", "60"))
 DOWN_CONFIRM_COUNT = int(os.environ.get("UPLINK_DOWN_CONFIRM_COUNT", "2"))
 UP_CONFIRM_COUNT = int(os.environ.get("UPLINK_UP_CONFIRM_COUNT", "2"))
+ALERT_DOWN_ON_START = os.environ.get("UPLINK_ALERT_DOWN_ON_START", "1").strip().lower() not in ("0", "false", "no")
 
 
 def _is_handshake_stale(details: str) -> bool:
@@ -63,8 +64,13 @@ async def run_uplink_healthcheck(context: ContextTypes.DEFAULT_TYPE) -> None:
         row = hc_state.get(key)
         if not row:
             prev = db.get_uplink_health(key)
-            stable = prev["last_alert_state"] if prev and prev["last_alert_state"] in ("ok", "down") else "ok"
-            row = {"stable": stable, "ok_streak": 0, "down_streak": 0}
+            prev_state = prev["last_alert_state"] if prev and prev["last_alert_state"] in ("ok", "down") else None
+            row = {
+                "stable": prev_state or "ok",
+                "ok_streak": 0,
+                "down_streak": 0,
+                "notify_down_once": bool(ALERT_DOWN_ON_START and prev_state == "down"),
+            }
             hc_state[key] = row
 
         if ok:
@@ -76,7 +82,12 @@ async def run_uplink_healthcheck(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         state = row["stable"]
         should_notify = False
-        if row["stable"] == "ok" and row["down_streak"] >= max(1, DOWN_CONFIRM_COUNT):
+        if row.get("notify_down_once") and not ok:
+            state = "down"
+            row["stable"] = "down"
+            row["notify_down_once"] = False
+            should_notify = True
+        elif row["stable"] == "ok" and row["down_streak"] >= max(1, DOWN_CONFIRM_COUNT):
             state = "down"
             row["stable"] = "down"
             should_notify = True

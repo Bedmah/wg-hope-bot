@@ -6,6 +6,7 @@ from . import db
 from .handlers import register_handlers
 from .monitoring import HEALTHCHECK_INTERVAL_SEC, run_uplink_healthcheck
 from .routing import sync_client_egress_routes
+from .server_admin import sync_interface_services
 from .settings import BOT_TOKEN, SERVER_PUBLIC_KEY, SERVER_ENDPOINT
 
 
@@ -18,6 +19,10 @@ def run() -> None:
         raise SystemExit("Set SERVER_ENDPOINT")
 
     db.init()
+    try:
+        sync_interface_services()
+    except Exception:
+        pass
     try:
         sync_client_egress_routes()
     except Exception:

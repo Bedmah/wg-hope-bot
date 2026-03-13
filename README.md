@@ -27,6 +27,14 @@
 
 ## 🆕 Актуальный релиз
 
+- `v1.2.3` — hardening uplink lifecycle после инцидентов с новыми регионами/интерфейсами:
+  - принудительный `Table = off` при замене VPN-uplink конфига (защита от перехвата default route);
+  - синхронизация `uplink_interfaces.enabled` -> `systemd` (`enable/start` или `stop/disable`) при старте бота;
+  - маршрутизация учитывает только `enabled=1` интерфейсы;
+  - запрет сохранения региона на выключенный/неготовый VPN-uplink;
+  - улучшенная проверка uplink-статуса (`handshake_stale + probe`) в админке;
+  - улучшен restart/reboot сценарий: down-alert после старта не теряется, recovery фиксируется корректно;
+  - обновлены production defaults: `VPN_SUBNET=10.8.0.0/22`, запуск бота через `bot.py` в systemd unit.
 - `v1.2.2` — стабильность uplink/маршрутизации + улучшенные рассылки:
   - группы получателей (`Ожидают`, `Одобренные`, `Забаненные`, `Все`) + ручное добавление `chat_id`
   - рассылка текста, фото, видео и файлов
@@ -127,6 +135,7 @@ systemctl is-active wg-hope-monitor.service
   - `UPLINK_HANDSHAKE_STALE_SEC`
   - `UPLINK_DOWN_CONFIRM_COUNT`
   - `UPLINK_UP_CONFIRM_COUNT`
+  - `UPLINK_ALERT_DOWN_ON_START`
 
 ## 🐳 Docker
 

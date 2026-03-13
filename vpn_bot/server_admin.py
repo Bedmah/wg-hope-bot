@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import db
@@ -15,6 +17,17 @@ def _run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 
 def _run_ok(*args: str) -> bool:
     return subprocess.run(args, text=True, capture_output=True).returncode == 0
+
+
+def _probe_connectivity(iface_name: str) -> bool:
+    if not shutil.which("ping"):
+        return False
+    p = subprocess.run(
+        ["ping", "-I", iface_name, "-c", "1", "-W", "2", "1.1.1.1"],
+        text=True,
+        capture_output=True,
+    )
+    return p.returncode == 0
 
 
 def _iface_name(value: str) -> str:
@@ -37,6 +50,43 @@ def _ensure_config_path(iface_name: str) -> Path:
 
 def _ensure_service_name(iface_name: str) -> str:
     return f"amnezia-awg@{iface_name}.service"
+
+
+def _force_table_off(config_text: str) -> str:
+    """
+    Ensure [Interface] contains `Table = off` so uplink configs with
+    AllowedIPs=0.0.0.0/0 do not hijack system default routing.
+    """
+    lines = config_text.strip().splitlines()
+    if not lines:
+        return config_text
+
+    out: list[str] = []
+    in_interface = False
+    saw_table = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_interface and not saw_table:
+                out.append("Table = off")
+            in_interface = stripped.lower() == "[interface]"
+            saw_table = False
+            out.append(line)
+            continue
+
+        if in_interface and re.match(r"(?i)^table\s*=", stripped):
+            if not saw_table:
+                out.append("Table = off")
+                saw_table = True
+            continue
+
+        out.append(line)
+
+    if in_interface and not saw_table:
+        out.append("Table = off")
+
+    return "\n".join(out).strip() + "\n"
 
 
 def list_interfaces_text() -> str:
@@ -63,6 +113,20 @@ def list_regions_text() -> str:
     return "\n".join(lines)
 
 
+def sync_interface_services() -> None:
+    for row in db.list_uplink_interfaces():
+        service = (row["service_name"] or "").strip()
+        if not service:
+            continue
+        enabled = int(row["enabled"]) == 1
+        if enabled:
+            _run("systemctl", "enable", service, check=False)
+            _run("systemctl", "start", service, check=False)
+        else:
+            _run("systemctl", "stop", service, check=False)
+            _run("systemctl", "disable", service, check=False)
+
+
 def add_interface(name: str, kind: str = "amneziawg", table_id: int | None = None) -> None:
     iface = _iface_name(name)
     if kind not in ("amneziawg", "wireguard", "system"):
@@ -79,19 +143,34 @@ def add_interface(name: str, kind: str = "amneziawg", table_id: int | None = Non
         if tid is None:
             tid = db.next_table_id()
     db.upsert_uplink_interface(iface, kind, cfg, service, tid, enabled=1)
+    if service:
+        _run("systemctl", "enable", service, check=False)
     sync_client_egress_routes()
 
 
 def delete_interface(name: str) -> bool:
     iface = _iface_name(name)
+    row = db.get_uplink_interface(iface)
     ok = db.delete_uplink_interface(iface)
     if ok:
+        if row and row["service_name"]:
+            _run("systemctl", "stop", row["service_name"], check=False)
+            _run("systemctl", "disable", row["service_name"], check=False)
         sync_client_egress_routes()
     return ok
 
 
 def add_or_update_region(code: str, label: str, interface_name: str, is_default: bool = False) -> None:
     iface = _iface_name(interface_name)
+    iface_row = db.get_uplink_interface(iface)
+    if not iface_row:
+        raise ValueError("interface not found")
+    if int(iface_row["enabled"]) != 1:
+        raise ValueError("interface is disabled")
+    if iface_row["kind"] in ("amneziawg", "wireguard"):
+        ok, details = interface_status(iface)
+        if not ok:
+            raise ValueError(f"interface is not ready: {details}")
     db.upsert_region(_region_code(code), label, iface, 1 if is_default else 0)
     sync_client_egress_routes()
 
@@ -126,7 +205,11 @@ def replace_interface_config(interface_name: str, config_text: str) -> tuple[boo
     if config_path.exists():
         backup_path.write_text(config_path.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
 
-    config_path.write_text(config_text.strip() + "\n", encoding="utf-8")
+    normalized_text = config_text.strip() + "\n"
+    if row["kind"] in ("amneziawg", "wireguard"):
+        normalized_text = _force_table_off(normalized_text)
+
+    config_path.write_text(normalized_text, encoding="utf-8")
     try:
         config_path.chmod(0o600)
     except Exception:
@@ -150,6 +233,7 @@ def replace_interface_config(interface_name: str, config_text: str) -> tuple[boo
             p = _run("systemctl", "restart", row["service_name"], check=False)
             if p.returncode != 0:
                 raise RuntimeError(p.stderr.strip() or p.stdout.strip() or "service restart failed")
+            _run("systemctl", "enable", row["service_name"], check=False)
         sync_client_egress_routes()
         return True, "Config applied successfully."
     except Exception as exc:
@@ -184,6 +268,7 @@ def interface_status(name: str) -> tuple[bool, str]:
         tool = "awg" if row["kind"] == "amneziawg" and shutil.which("awg") else "wg"
         p_hs = _run(tool, "show", iface, "latest-handshakes", check=False)
         hs_text = (p_hs.stdout or "").strip()
+        stale_sec = int(os.environ.get("UPLINK_HANDSHAKE_STALE_SEC", "60"))
         if not hs_text:
             parts.append("handshake=none")
             ok = False
@@ -198,5 +283,15 @@ def interface_status(name: str) -> tuple[bool, str]:
                 ok = False
             else:
                 parts.append(f"handshake_unix={latest}")
+                now = int(datetime.now(timezone.utc).timestamp())
+                age = now - latest
+                if age > stale_sec:
+                    if _probe_connectivity(iface):
+                        parts.append(f"handshake_stale>{stale_sec}s")
+                        parts.append("probe=ok")
+                    else:
+                        parts.append(f"handshake_stale>{stale_sec}s")
+                        parts.append("probe=fail")
+                        ok = False
 
     return ok, " | ".join(parts)

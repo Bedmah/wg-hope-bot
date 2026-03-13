@@ -9,7 +9,7 @@ WG_INTERFACE = os.environ.get("WG_INTERFACE", "wg0")
 WG_CONF = Path(os.environ.get("WG_CONF", f"/etc/wireguard/{WG_INTERFACE}.conf"))
 SERVER_ENDPOINT = os.environ.get("SERVER_ENDPOINT", "")
 SERVER_PUBLIC_KEY = os.environ.get("SERVER_PUBLIC_KEY", "")
-VPN_SUBNET = os.environ.get("VPN_SUBNET", "10.8.0.0/24")
+VPN_SUBNET = os.environ.get("VPN_SUBNET", "10.8.0.0/22")
 DNS_IP = os.environ.get("DNS_IP", "1.1.1.1")
 KEEPALIVE = int(os.environ.get("KEEPALIVE", "25"))
 

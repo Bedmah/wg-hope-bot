@@ -594,8 +594,11 @@ def upsert_region(code: str, label: str, interface_name: str, is_default: int = 
     region_code = normalize_region(code)
     if not region_code:
         raise ValueError("empty region code")
-    if not get_uplink_interface(interface_name):
+    iface = get_uplink_interface(interface_name)
+    if not iface:
         raise ValueError("interface not found")
+    if int(iface["enabled"]) != 1:
+        raise ValueError("interface is disabled")
     ts = now_iso()
     with _db() as conn:
         if int(is_default):
