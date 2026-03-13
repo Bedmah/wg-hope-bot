@@ -1,44 +1,44 @@
 # WG Hope Bot v1.2.3
 
-Release focus: production hardening for dynamic uplink/region management and reboot safety.
+Фокус релиза: усиление стабильности uplink/регионов в production и предсказуемое поведение после перезагрузок.
 
-## Summary
+## Кратко
 
-This release closes the class of incidents where newly added VPN uplinks could break connectivity after reboot, silently fall back to another region, or miss expected DOWN/RECOVERY signaling.
+Релиз закрывает класс инцидентов, при которых новые VPN-uplink интерфейсы после reboot могли не подниматься, трафик клиентов уходил в fallback-регион, а `DOWN/RECOVERY` уведомления работали не всегда ожидаемо.
 
-## What Changed
+## Что изменено
 
-- Uplink config safety:
-  - VPN uplink config replacement now force-normalizes `Table = off` in `[Interface]`.
-  - This prevents accidental default-route hijack when `AllowedIPs = 0.0.0.0/0` is present.
+- Безопасность uplink-конфигов:
+  - при замене VPN-uplink конфига принудительно нормализуется `Table = off` в секции `[Interface]`;
+  - это предотвращает случайный перехват default route при `AllowedIPs = 0.0.0.0/0`.
 
-- Service lifecycle sync:
-  - Bot startup now synchronizes DB uplink state with systemd:
+- Синхронизация жизненного цикла сервисов:
+  - при старте бота состояние uplink из БД синхронизируется с systemd:
   - `enabled=1` -> `systemctl enable + start`
   - `enabled=0` -> `systemctl stop + disable`
-  - Result: enabled uplinks survive reboot and come back automatically.
+  - итог: включённые uplink-интерфейсы автоматически переживают reboot и поднимаются снова.
 
-- Region/routing safety:
-  - Routing logic ignores disabled uplinks.
-  - Region assignment rejects disabled interfaces.
-  - Region assignment for VPN uplinks also rejects non-ready interfaces.
-  - Interface status in admin checks now includes stale-handshake probe (`probe=ok|fail`) to avoid misleading “OK/FAIL”.
+- Защита регионов и маршрутизации:
+  - маршрутизация теперь игнорирует выключенные uplink-интерфейсы;
+  - нельзя сохранить регион на выключенный интерфейс;
+  - для VPN-uplink нельзя сохранить регион, если интерфейс не готов;
+  - проверка состояния интерфейсов в админке дополнена probe-проверкой при stale handshake (`probe=ok|fail`), чтобы уменьшить ложные `OK/FAIL`.
 
-- Monitoring reliability:
-  - Added `UPLINK_ALERT_DOWN_ON_START` (default `1`) to control down-alert behavior after restart.
-  - Fixed alert state transitions so recovery correctly stores `last_alert_state=ok`.
+- Надёжность мониторинга и алертов:
+  - добавлен `UPLINK_ALERT_DOWN_ON_START` (по умолчанию `1`) для управления down-alert после рестарта;
+  - исправлены переходы состояния алертов: recovery корректно фиксирует `last_alert_state=ok`.
 
-- Production defaults and startup consistency:
-  - Default subnet updated to `/22` in templates/settings.
-  - Bot unit launch path aligned to direct `bot.py` execution.
+- Production defaults и консистентный запуск:
+  - дефолтная подсеть обновлена до `/22` в шаблонах/настройках;
+  - запуск бота в systemd переведён на прямой `bot.py` entrypoint.
 
-## Practical Effect
+## Практический эффект
 
-- New regions backed by enabled/healthy uplinks remain stable after server reboot.
-- Clients no longer “silently drift” to fallback region when the target uplink is actually healthy and should be active.
-- Alerting behavior is more predictable during restart windows.
+- Новые регионы на включённых и рабочих uplink остаются стабильными после reboot.
+- Клиенты перестают «тихо» уезжать в fallback-регион, если целевой uplink реально доступен и должен быть активен.
+- Поведение алертов в restart-окнах стало предсказуемее.
 
-## Files Updated
+## Обновлённые файлы
 
 - `vpn_bot/server_admin.py`
 - `vpn_bot/routing.py`
@@ -50,4 +50,3 @@ This release closes the class of incidents where newly added VPN uplinks could b
 - `.env.example`
 - `README.md`
 - `CHANGELOG.md`
-

@@ -2,22 +2,22 @@
 
 ## v1.2.3
 
-- Production hardening for dynamic uplink interfaces/regions:
-  - added forced `Table = off` normalization for VPN uplink configs during replace flow to prevent default route hijack;
-  - added systemd service sync for uplinks on bot startup (`enable/start` for enabled interfaces, `stop/disable` for disabled ones);
-  - ensured newly enabled uplink services are started immediately and survive reboot.
-- Routing and region safety improvements:
-  - routing now ignores disabled uplink interfaces (`enabled=0`);
-  - region assignment now rejects disabled interfaces and rejects non-ready VPN uplinks;
-  - interface status now includes stale-handshake probing (`probe=ok|fail`) to reduce false positives.
-- Monitoring/recovery improvements:
-  - improved startup alert behavior for previously down uplinks (`UPLINK_ALERT_DOWN_ON_START`, default enabled);
-  - fixed state transitions so recovery updates `last_alert_state=ok` correctly after interface restoration.
-- Network/subnet/domain related production updates consolidated:
-  - defaults updated to `VPN_SUBNET=10.8.0.0/22` in project settings/templates;
-  - bot systemd launch updated to direct `bot.py` execution for cleaner startup behavior.
-- Operational reliability outcomes:
-  - verified repeated reboot scenarios: uplink auto-start, policy routing persistence, and no fallback drift to unintended region when target uplink is healthy.
+- Усилен production-контур для динамических uplink интерфейсов и регионов:
+  - добавлена принудительная нормализация `Table = off` при замене VPN-uplink конфигов, чтобы исключить перехват default route;
+  - добавлена синхронизация uplink-сервисов с systemd при старте бота (`enable/start` для включённых интерфейсов, `stop/disable` для выключенных);
+  - включённые uplink-интерфейсы теперь поднимаются сразу и корректно переживают reboot.
+- Улучшена безопасность маршрутизации и регионов:
+  - маршрутизация больше не использует выключенные uplink интерфейсы (`enabled=0`);
+  - назначение региона запрещено для выключенных интерфейсов и неготовых VPN-uplink;
+  - проверка интерфейсов в админке дополнена stale-handshake probe (`probe=ok|fail`) для уменьшения ложных статусов.
+- Улучшена надёжность мониторинга и восстановления:
+  - улучшено поведение down-alert после рестарта для ранее упавших uplink (`UPLINK_ALERT_DOWN_ON_START`, включён по умолчанию);
+  - исправлены переходы состояния алертов: recovery корректно фиксирует `last_alert_state=ok`.
+- Консолидированы сетевые/production обновления:
+  - дефолтная подсеть обновлена до `VPN_SUBNET=10.8.0.0/22` в настройках и шаблонах;
+  - systemd-запуск бота обновлён на прямой вызов `bot.py` для более чистого старта.
+- Результат по стабильности:
+  - подтверждена устойчивость после повторных reboot: автоподъём uplink, сохранение policy routing и отсутствие нежелательного fallback в другой регион при доступном целевом uplink.
 
 ## v1.2.2
 
