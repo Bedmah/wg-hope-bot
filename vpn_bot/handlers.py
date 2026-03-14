@@ -1,6 +1,10 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import ipaddress
+import subprocess
+import sys
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -31,10 +35,14 @@ from .actions import (
     format_users,
     format_logs,
     get_user_guide,
+    get_regions_text,
+    get_about_text,
+    get_wireguard_text,
     get_support_text,
 )
 from .keyboards import (
     bottom_menu,
+    info_menu,
     admin_main_menu,
     admin_users_menu,
     admin_logs_menu,
@@ -52,7 +60,11 @@ from .keyboards import (
     servers_delete_region_kb,
     BUTTON_ADD,
     BUTTON_LIST,
-    BUTTON_GUIDE,
+    BUTTON_INFO,
+    BUTTON_I_GUIDE,
+    BUTTON_I_REGIONS,
+    BUTTON_I_ABOUT,
+    BUTTON_I_WIREGUARD,
     BUTTON_REGION,
     BUTTON_SUPPORT,
     BUTTON_ADMIN,
@@ -78,10 +90,14 @@ from .keyboards import (
     BUTTON_L_RECENT,
     BUTTON_L_BY_USER,
     BUTTON_L_CHAT_FILE,
+    BUTTON_L_POSTBOOT_TEST,
     BUTTON_P_STATUS,
     BUTTON_P_SUPPORT,
     BUTTON_C_VIEW,
     BUTTON_C_GUIDE,
+    BUTTON_C_REGIONS,
+    BUTTON_C_ABOUT,
+    BUTTON_C_WIREGUARD,
     BUTTON_C_SUPPORT,
     BUTTON_S_LIST_IFACES,
     BUTTON_S_ADD_IFACE,
@@ -100,6 +116,8 @@ from .keyboards import (
     BUTTON_B_NEXT,
 )
 from .settings import SUPER_OWNER_CHAT_ID, VPN_SUBNET, CHAT_DIR, MONITOR_URL
+
+POSTBOOT_CHECK_SCRIPT = Path(__file__).resolve().parents[1] / "deploy" / "scripts" / "post_reboot_healthcheck.py"
 
 
 def is_adminish(role: str | None) -> bool:
@@ -138,6 +156,8 @@ def menu_for_ui(role: str | None, ui_menu: str):
         return admin_customize_menu()
     if ui_menu == "admin_servers":
         return admin_servers_menu()
+    if ui_menu == "info":
+        return info_menu()
     return main_menu_for(role)
 
 
@@ -318,6 +338,43 @@ async def send_chunks(context: ContextTypes.DEFAULT_TYPE, chat_id: str, text: st
         )
 
 
+def _run_postboot_check_sync() -> tuple[int, str]:
+    if not POSTBOOT_CHECK_SCRIPT.exists():
+        return 127, f"Скрипт не найден: {POSTBOOT_CHECK_SCRIPT}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(POSTBOOT_CHECK_SCRIPT)],
+            text=True,
+            capture_output=True,
+            timeout=240,
+        )
+    except Exception as exc:
+        return 1, f"Ошибка запуска теста: {exc}"
+
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if not out and not err:
+        text = "(пустой вывод)"
+    elif out and err:
+        text = f"{out}\n\nstderr:\n{err}"
+    else:
+        text = out or err
+    return int(proc.returncode), text
+
+
+async def run_postboot_check_manual(context: ContextTypes.DEFAULT_TYPE, chat_id: str, role: str) -> None:
+    await say(context, chat_id, "Запускаю ручной post-reboot тест, подожди 5-20 секунд...", admin_logs_menu())
+    code, output = await asyncio.to_thread(_run_postboot_check_sync)
+    status = "успешно" if code == 0 else ("с ошибками" if code == 2 else "сбоем запуска")
+    db.log_event("manual_postboot_check", chat_id, None, f"code={code}")
+    await send_chunks(
+        context,
+        chat_id,
+        f"Ручной тест завершён: {status} (код {code}).\n\n{output}",
+        admin_logs_menu(),
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     db.init()
     user = update.effective_user
@@ -427,6 +484,11 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Меню", main_menu_for(role))
             return
 
+        if ui_menu == "info":
+            context.user_data["ui_menu"] = "main"
+            await say(context, chat_id, "Меню", main_menu_for(role))
+            return
+
     admin_mode = context.user_data.get("admin_mode")
     if is_adminish(role) and admin_mode:
         handled = await _handle_admin_mode(update, context, role, admin_mode, text)
@@ -443,8 +505,29 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await say(context, chat_id, "Меню", main_menu_for(role))
         return
 
-    if text == BUTTON_GUIDE:
-        await say(context, chat_id, get_user_guide(), main_menu_for(role))
+    if text == BUTTON_INFO:
+        context.user_data["ui_menu"] = "info"
+        await say(context, chat_id, "Сайт проекта: https://vpn.bedmah.ru/\nВыбери пункт:", info_menu())
+        return
+
+    if text == BUTTON_I_GUIDE:
+        context.user_data["ui_menu"] = "info"
+        await say(context, chat_id, get_user_guide(), info_menu())
+        return
+
+    if text == BUTTON_I_REGIONS:
+        context.user_data["ui_menu"] = "info"
+        await say(context, chat_id, get_regions_text(), info_menu())
+        return
+
+    if text == BUTTON_I_ABOUT:
+        context.user_data["ui_menu"] = "info"
+        await say(context, chat_id, get_about_text(), info_menu())
+        return
+
+    if text == BUTTON_I_WIREGUARD:
+        context.user_data["ui_menu"] = "info"
+        await say(context, chat_id, get_wireguard_text(), info_menu())
         return
 
     if text == BUTTON_ADD:
@@ -500,7 +583,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_adminish(role) and text == BUTTON_A_CLIENTS:
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "clients_owner"
-        await say(context, chat_id, "Введи chat_id пользователя для просмотра его конфигов. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id пользователя для просмотра его конфигов. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_A_BROADCAST:
@@ -518,7 +601,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_adminish(role) and text == BUTTON_A_LIMITS:
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "limit_target"
-        await say(context, chat_id, "Введи chat_id пользователя для изменения лимита. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id пользователя для изменения лимита. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_A_STATS:
@@ -594,7 +677,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Примеры:\n"
             "aw-de amneziawg 210\n"
             "eth0 system",
-            admin_servers_menu(),
+            cancel_menu(),
         )
         return
 
@@ -626,7 +709,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Примеры:\n"
             "germany;Германия;aw-de\n"
             "latvia;Латвия;aw-lv;default",
-            admin_servers_menu(),
+            cancel_menu(),
         )
         return
 
@@ -649,42 +732,42 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id,
             "Установка региона по умолчанию для НОВЫХ конфигов.\n"
             "Введи код региона, например: latvia",
-            admin_servers_menu(),
+            cancel_menu(),
         )
         return
 
     if is_adminish(role) and text == BUTTON_S_CFG_IFACE:
         context.user_data["ui_menu"] = "admin_servers"
         context.user_data["admin_mode"] = "srv_cfg_iface_name"
-        await say(context, chat_id, "Введи имя интерфейса для замены конфига.", admin_servers_menu())
+        await say(context, chat_id, "Введи имя интерфейса для замены конфига.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_U_PENDING:
         context.user_data["ui_menu"] = "admin_users"
-        await send_chunks(context, chat_id, format_users(db.users_by_role("pending")), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("pending"), "Заявки"), admin_users_menu(is_super_owner(role)))
         return
 
     if is_adminish(role) and text == BUTTON_U_ACTIVE:
         context.user_data["ui_menu"] = "admin_users"
         rows = db.users_by_role("super_owner") + db.users_by_role("admin") + db.users_by_role("user")
-        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(rows, "Активные пользователи"), admin_users_menu(is_super_owner(role)))
         return
 
     if is_adminish(role) and text == BUTTON_U_BANNED:
         context.user_data["ui_menu"] = "admin_users"
-        await send_chunks(context, chat_id, format_users(db.users_by_role("banned")), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("banned"), "Забаненные"), admin_users_menu(is_super_owner(role)))
         return
 
     if is_adminish(role) and text == BUTTON_U_ADD:
         context.user_data["ui_menu"] = "admin_users"
         context.user_data["admin_mode"] = "add_user"
-        await say(context, chat_id, "Введи chat_id для выдачи роли user. Для отмены: 'Назад'.", admin_users_menu(is_super_owner(role)))
+        await say(context, chat_id, "Введи chat_id для выдачи роли user. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_U_BAN:
         context.user_data["ui_menu"] = "admin_users"
         context.user_data["admin_mode"] = "ban_target"
-        await say(context, chat_id, "Введи chat_id для бана. Для отмены: 'Назад'.", admin_users_menu(is_super_owner(role)))
+        await say(context, chat_id, "Введи chat_id для бана. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_U_ADMINS:
@@ -693,7 +776,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
         rows = db.users_by_role("super_owner") + db.users_by_role("admin")
         context.user_data["ui_menu"] = "admin_users"
-        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(rows, "Администраторы"), admin_users_menu(is_super_owner(role)))
         return
 
     if is_adminish(role) and text == BUTTON_U_PROMOTE:
@@ -701,7 +784,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Недостаточно прав.", menu_for_ui(role, ui_menu))
             return
         context.user_data["admin_mode"] = "promote_admin"
-        await say(context, chat_id, "Введи chat_id для назначения admin. Для отмены: 'Назад'.", menu_for_ui(role, ui_menu))
+        await say(context, chat_id, "Введи chat_id для назначения admin. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_U_DEMOTE:
@@ -709,7 +792,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Недостаточно прав.", menu_for_ui(role, ui_menu))
             return
         context.user_data["admin_mode"] = "demote_admin"
-        await say(context, chat_id, "Введи chat_id для снятия роли admin. Для отмены: 'Назад'.", menu_for_ui(role, ui_menu))
+        await say(context, chat_id, "Введи chat_id для снятия роли admin. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_L_RECENT:
@@ -720,32 +803,68 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if is_adminish(role) and text == BUTTON_L_BY_USER:
         context.user_data["ui_menu"] = "admin_logs"
         context.user_data["admin_mode"] = "logs_user"
-        await say(context, chat_id, "Введи: chat_id и опционально лимит, например: 123456 200. Для отмены: 'Назад'.", admin_logs_menu())
+        await say(context, chat_id, "Введи: chat_id и опционально лимит, например: 123456 200. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_L_CHAT_FILE:
         context.user_data["ui_menu"] = "admin_logs"
         context.user_data["admin_mode"] = "logs_chat_file"
-        await say(context, chat_id, "Введи chat_id пользователя для скачивания чата. Для отмены: 'Назад'.", admin_logs_menu())
+        await say(context, chat_id, "Введи chat_id пользователя для скачивания чата. Для отмены: 'Назад'.", cancel_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_L_POSTBOOT_TEST:
+        context.user_data["ui_menu"] = "admin_logs"
+        context.user_data["admin_mode"] = None
+        await run_postboot_check_manual(context, chat_id, role)
         return
 
     if is_adminish(role) and text == BUTTON_C_VIEW:
         context.user_data["ui_menu"] = "admin_customize"
         guide = get_user_guide()
+        regions = get_regions_text()
+        about = get_about_text()
+        wireguard = get_wireguard_text()
         support = get_support_text()
-        await send_chunks(context, chat_id, f"Текущая инструкция:\n{guide}\n\nТекущая поддержка:\n{support}", admin_customize_menu())
+        await send_chunks(
+            context,
+            chat_id,
+            f"Текущая инструкция:\n{guide}\n\n"
+            f"Тексты раздела 'Регионы':\n{regions}\n\n"
+            f"Текст раздела 'О проекте':\n{about}\n\n"
+            f"Текст раздела 'WireGuard':\n{wireguard}\n\n"
+            f"Текущая поддержка:\n{support}",
+            admin_customize_menu(),
+        )
         return
 
     if is_adminish(role) and text == BUTTON_C_GUIDE:
         context.user_data["ui_menu"] = "admin_customize"
         context.user_data["admin_mode"] = "customize_guide"
-        await say(context, chat_id, "Отправьте новый текст для раздела 'Инструкция'. Для отмены: 'Назад'.", admin_customize_menu())
+        await say(context, chat_id, "Отправьте новый текст для раздела 'Инструкция'. Для отмены: 'Назад'.", cancel_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_C_REGIONS:
+        context.user_data["ui_menu"] = "admin_customize"
+        context.user_data["admin_mode"] = "customize_regions"
+        await say(context, chat_id, "Отправьте новый текст для раздела 'Регионы'. Для отмены: 'Назад'.", cancel_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_C_ABOUT:
+        context.user_data["ui_menu"] = "admin_customize"
+        context.user_data["admin_mode"] = "customize_about"
+        await say(context, chat_id, "Отправьте новый текст для раздела 'О проекте'. Для отмены: 'Назад'.", cancel_menu())
+        return
+
+    if is_adminish(role) and text == BUTTON_C_WIREGUARD:
+        context.user_data["ui_menu"] = "admin_customize"
+        context.user_data["admin_mode"] = "customize_wireguard"
+        await say(context, chat_id, "Отправьте новый текст для раздела 'WireGuard'. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if is_adminish(role) and text == BUTTON_C_SUPPORT:
         context.user_data["ui_menu"] = "admin_customize"
         context.user_data["admin_mode"] = "customize_support"
-        await say(context, chat_id, "Отправьте новый текст для раздела 'Доступ / Вопросы'. Для отмены: 'Назад'.", admin_customize_menu())
+        await say(context, chat_id, "Отправьте новый текст для раздела 'Доступ / Вопросы'. Для отмены: 'Назад'.", cancel_menu())
         return
 
     await say(context, chat_id, "Меню", menu_for_ui(role, ui_menu))
@@ -833,11 +952,64 @@ async def _handle_admin_mode(
     chat_id = str(update.effective_chat.id)
     ui_menu = context.user_data.get("ui_menu", "admin_main")
 
+    # If admin pressed a navigation/menu button while in input mode,
+    # leave the mode and let normal menu routing handle the button.
+    nav_buttons = {
+        BUTTON_ADMIN,
+        BUTTON_BACK,
+        BUTTON_A_USERS,
+        BUTTON_A_CLIENTS,
+        BUTTON_A_SYNC_PROFILES,
+        BUTTON_A_MONITORING,
+        BUTTON_A_CUSTOMIZE,
+        BUTTON_A_BROADCAST,
+        BUTTON_A_LIMITS,
+        BUTTON_A_STATS,
+        BUTTON_A_LOGS,
+        BUTTON_A_SERVERS,
+        BUTTON_U_PENDING,
+        BUTTON_U_ACTIVE,
+        BUTTON_U_BANNED,
+        BUTTON_U_ADD,
+        BUTTON_U_BAN,
+        BUTTON_U_ADMINS,
+        BUTTON_U_PROMOTE,
+        BUTTON_U_DEMOTE,
+        BUTTON_L_RECENT,
+        BUTTON_L_BY_USER,
+        BUTTON_L_CHAT_FILE,
+        BUTTON_L_POSTBOOT_TEST,
+        BUTTON_C_VIEW,
+        BUTTON_C_GUIDE,
+        BUTTON_C_REGIONS,
+        BUTTON_C_ABOUT,
+        BUTTON_C_WIREGUARD,
+        BUTTON_C_SUPPORT,
+        BUTTON_S_LIST_IFACES,
+        BUTTON_S_ADD_IFACE,
+        BUTTON_S_DEL_IFACE,
+        BUTTON_S_CFG_IFACE,
+        BUTTON_S_LIST_REGIONS,
+        BUTTON_S_ADD_REGION,
+        BUTTON_S_DEL_REGION,
+        BUTTON_S_DEFAULT_REGION,
+        BUTTON_S_STATUS,
+        BUTTON_B_PENDING,
+        BUTTON_B_APPROVED,
+        BUTTON_B_BANNED,
+        BUTTON_B_ALL,
+        BUTTON_B_ADD_IDS,
+        BUTTON_B_NEXT,
+    }
+    if text in nav_buttons:
+        context.user_data["admin_mode"] = None
+        return False
+
     if admin_mode == "add_user":
         target = text.strip()
         if not target:
             context.user_data["admin_mode"] = None
-            await say(context, chat_id, "Пустой chat_id.")
+            await say(context, chat_id, "Пустой chat_id.", menu_for_ui(actor_role, ui_menu))
             return True
 
         db.set_role(target, "user")
@@ -854,7 +1026,7 @@ async def _handle_admin_mode(
     if admin_mode == "promote_admin":
         if not is_super_owner(actor_role):
             context.user_data["admin_mode"] = None
-            await say(context, chat_id, "Недостаточно прав.")
+            await say(context, chat_id, "Недостаточно прав.", menu_for_ui(actor_role, ui_menu))
             return True
         target = text.strip()
         db.set_role(target, "admin")
@@ -866,7 +1038,7 @@ async def _handle_admin_mode(
     if admin_mode == "demote_admin":
         if not is_super_owner(actor_role):
             context.user_data["admin_mode"] = None
-            await say(context, chat_id, "Недостаточно прав.")
+            await say(context, chat_id, "Недостаточно прав.", menu_for_ui(actor_role, ui_menu))
             return True
 
         target = text.strip()
@@ -925,7 +1097,7 @@ async def _handle_admin_mode(
                 context,
                 chat_id,
                 f"Введи текст рассылки. Получателей: {len(context.user_data['broadcast_targets'])}. Для отмены: 'Назад'.",
-                menu_for_ui(actor_role, ui_menu),
+                cancel_menu(),
             )
             return True
         legacy_ids = parse_chat_ids(raw)
@@ -936,7 +1108,7 @@ async def _handle_admin_mode(
                 context,
                 chat_id,
                 f"Введи текст рассылки. Получателей: {len(legacy_ids)}. Для отмены: 'Назад'.",
-                menu_for_ui(actor_role, ui_menu),
+                cancel_menu(),
             )
             return True
 
@@ -982,7 +1154,7 @@ async def _handle_admin_mode(
                 context,
                 chat_id,
                 f"Введи текст рассылки. Получателей: {len(targets)}. Для отмены: 'Назад'.",
-                menu_for_ui(actor_role, ui_menu),
+                cancel_menu(),
             )
             return True
         await say(context, chat_id, "Используй кнопки: добавить chat_id или перейти к тексту.", admin_broadcast_confirm_menu())
@@ -1002,7 +1174,7 @@ async def _handle_admin_mode(
 
         context.user_data["broadcast_targets"] = targets
         context.user_data["admin_mode"] = "broadcast_text"
-        await say(context, chat_id, f"Введи текст рассылки. Получателей: {len(targets)}. Для отмены: 'Назад'.", menu_for_ui(actor_role, ui_menu))
+        await say(context, chat_id, f"Введи текст рассылки. Получателей: {len(targets)}. Для отмены: 'Назад'.", cancel_menu())
         return True
 
     if admin_mode == "broadcast_text":
@@ -1026,7 +1198,7 @@ async def _handle_admin_mode(
     if admin_mode == "ban_target":
         context.user_data["ban_target"] = text.strip()
         context.user_data["admin_mode"] = "ban_reason"
-        await say(context, chat_id, "Введи комментарий к бану. Для отмены: 'Назад'.", menu_for_ui(actor_role, ui_menu))
+        await say(context, chat_id, "Введи комментарий к бану. Для отмены: 'Назад'.", cancel_menu())
         return True
 
     if admin_mode == "ban_reason":
@@ -1058,7 +1230,7 @@ async def _handle_admin_mode(
         current = db.get_limit(target)
         context.user_data["limit_target"] = target
         context.user_data["admin_mode"] = "limit_value"
-        await say(context, chat_id, f"Текущий лимит: {current}. Введи новый лимит числом. Для отмены: 'Назад'.", menu_for_ui(actor_role, ui_menu))
+        await say(context, chat_id, f"Текущий лимит: {current}. Введи новый лимит числом. Для отмены: 'Назад'.", cancel_menu())
         return True
 
     if admin_mode == "limit_value":
@@ -1068,7 +1240,7 @@ async def _handle_admin_mode(
             if value < 0:
                 raise ValueError
         except Exception:
-            await say(context, chat_id, "Ошибка: введи неотрицательное число.")
+            await say(context, chat_id, "Ошибка: введи неотрицательное число.", menu_for_ui(actor_role, ui_menu))
             return True
 
         updated = db.set_limit(target, value)
@@ -1086,7 +1258,7 @@ async def _handle_admin_mode(
     if admin_mode == "logs_user":
         parts = text.strip().split()
         if not parts:
-            await say(context, chat_id, "Формат: <chat_id> [limit]")
+            await say(context, chat_id, "Формат: <chat_id> [limit]", admin_logs_menu())
             return True
 
         target = parts[0]
@@ -1099,7 +1271,7 @@ async def _handle_admin_mode(
     if admin_mode == "logs_chat_file":
         target_chat_id = text.strip()
         if not target_chat_id:
-            await say(context, chat_id, "Укажи chat_id.")
+            await say(context, chat_id, "Укажи chat_id.", admin_logs_menu())
             return True
 
         path = CHAT_DIR / f"{target_chat_id}.log"
@@ -1132,7 +1304,7 @@ async def _handle_admin_mode(
     if admin_mode == "customize_guide":
         new_text = text.strip()
         if len(new_text) < 10:
-            await say(context, chat_id, "Слишком короткий текст. Минимум 10 символов.")
+            await say(context, chat_id, "Слишком короткий текст. Минимум 10 символов.", admin_customize_menu())
             return True
         db.set_bot_text("user_guide", new_text)
         db.log_event("customize_user_guide", chat_id, None, f"len={len(new_text)}")
@@ -1140,10 +1312,43 @@ async def _handle_admin_mode(
         await say(context, chat_id, "Инструкция обновлена.", admin_customize_menu())
         return True
 
+    if admin_mode == "customize_regions":
+        new_text = text.strip()
+        if len(new_text) < 10:
+            await say(context, chat_id, "Слишком короткий текст. Минимум 10 символов.", admin_customize_menu())
+            return True
+        db.set_bot_text("regions_text", new_text)
+        db.log_event("customize_regions_text", chat_id, None, f"len={len(new_text)}")
+        context.user_data["admin_mode"] = None
+        await say(context, chat_id, "Текст раздела 'Регионы' обновлен.", admin_customize_menu())
+        return True
+
+    if admin_mode == "customize_about":
+        new_text = text.strip()
+        if len(new_text) < 10:
+            await say(context, chat_id, "Слишком короткий текст. Минимум 10 символов.", admin_customize_menu())
+            return True
+        db.set_bot_text("about_text", new_text)
+        db.log_event("customize_about_text", chat_id, None, f"len={len(new_text)}")
+        context.user_data["admin_mode"] = None
+        await say(context, chat_id, "Текст раздела 'О проекте' обновлен.", admin_customize_menu())
+        return True
+
+    if admin_mode == "customize_wireguard":
+        new_text = text.strip()
+        if len(new_text) < 10:
+            await say(context, chat_id, "Слишком короткий текст. Минимум 10 символов.", admin_customize_menu())
+            return True
+        db.set_bot_text("wireguard_text", new_text)
+        db.log_event("customize_wireguard_text", chat_id, None, f"len={len(new_text)}")
+        context.user_data["admin_mode"] = None
+        await say(context, chat_id, "Текст раздела 'WireGuard' обновлен.", admin_customize_menu())
+        return True
+
     if admin_mode == "customize_support":
         new_text = text.strip()
         if len(new_text) < 3:
-            await say(context, chat_id, "Слишком короткий текст.")
+            await say(context, chat_id, "Слишком короткий текст.", admin_customize_menu())
             return True
         db.set_bot_text("support_text", new_text)
         db.log_event("customize_support_text", chat_id, None, f"len={len(new_text)}")
@@ -1154,7 +1359,7 @@ async def _handle_admin_mode(
     if admin_mode == "srv_add_iface":
         parts = text.strip().split()
         if len(parts) < 2:
-            await say(context, chat_id, "Неверный формат. Ожидаю: <ifname> <kind> [table_id].")
+            await say(context, chat_id, "Неверный формат. Ожидаю: <ifname> <kind> [table_id].", admin_servers_menu())
             return True
         ifname, kind = parts[0], parts[1]
         table_id = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
@@ -1185,7 +1390,7 @@ async def _handle_admin_mode(
     if admin_mode == "srv_add_region":
         parts = [x.strip() for x in text.split(";")]
         if len(parts) < 3:
-            await say(context, chat_id, "Неверный формат. Ожидаю: <code>;<label>;<iface>[;default].")
+            await say(context, chat_id, "Неверный формат. Ожидаю: <code>;<label>;<iface>[;default].", admin_servers_menu())
             return True
         code, label, iface = parts[0], parts[1], parts[2]
         make_default = len(parts) > 3 and parts[3].strip().lower() in ("default", "1", "yes", "true")
@@ -1359,7 +1564,7 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if not is_adminish(role):
-        await say(context, chat_id, "Недостаточно прав.")
+        await say(context, chat_id, "Недостаточно прав.", main_menu_for(role))
         return
 
     if data == "srv_back":
@@ -1449,13 +1654,19 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data == "a_logs_user":
         context.user_data["ui_menu"] = "admin_logs"
         context.user_data["admin_mode"] = "logs_user"
-        await say(context, chat_id, "Введи: chat_id и опционально лимит, например: 123456 200. Для отмены: 'Назад'.", admin_logs_menu())
+        await say(context, chat_id, "Введи: chat_id и опционально лимит, например: 123456 200. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "a_logs_chat_file":
         context.user_data["ui_menu"] = "admin_logs"
         context.user_data["admin_mode"] = "logs_chat_file"
-        await say(context, chat_id, "Введи chat_id пользователя для скачивания чата. Для отмены: 'Назад'.", admin_logs_menu())
+        await say(context, chat_id, "Введи chat_id пользователя для скачивания чата. Для отмены: 'Назад'.", cancel_menu())
+        return
+
+    if data == "a_logs_postboot_test":
+        context.user_data["ui_menu"] = "admin_logs"
+        context.user_data["admin_mode"] = None
+        await run_postboot_check_manual(context, chat_id, role)
         return
 
     if data == "u_users":
@@ -1464,34 +1675,34 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if data == "u_pending":
-        await send_chunks(context, chat_id, format_users(db.users_by_role("pending")), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("pending"), "Заявки"), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_active":
         rows = db.users_by_role("super_owner") + db.users_by_role("admin") + db.users_by_role("user")
-        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(rows, "Активные пользователи"), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_banned":
-        await send_chunks(context, chat_id, format_users(db.users_by_role("banned")), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(db.users_by_role("banned"), "Забаненные"), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_add":
         context.user_data["ui_menu"] = "admin_users"
         context.user_data["admin_mode"] = "add_user"
-        await say(context, chat_id, "Введи chat_id для выдачи роли user. Для отмены: 'Назад'.", admin_users_menu(is_super_owner(role)))
+        await say(context, chat_id, "Введи chat_id для выдачи роли user. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_ban":
         context.user_data["ui_menu"] = "admin_users"
         context.user_data["admin_mode"] = "ban_target"
-        await say(context, chat_id, "Введи chat_id для бана. Для отмены: 'Назад'.", admin_users_menu(is_super_owner(role)))
+        await say(context, chat_id, "Введи chat_id для бана. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_clients":
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "clients_owner"
-        await say(context, chat_id, "Введи chat_id пользователя для просмотра его конфигов. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id пользователя для просмотра его конфигов. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_broadcast":
@@ -1509,33 +1720,33 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data == "u_limit":
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "limit_target"
-        await say(context, chat_id, "Введи chat_id пользователя для изменения лимита. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id пользователя для изменения лимита. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_admins":
         if not is_super_owner(role):
-            await say(context, chat_id, "Недостаточно прав.")
+            await say(context, chat_id, "Недостаточно прав.", admin_menu_for(role))
             return
         rows = db.users_by_role("super_owner") + db.users_by_role("admin")
-        await send_chunks(context, chat_id, format_users(rows), admin_users_menu(is_super_owner(role)))
+        await send_chunks(context, chat_id, format_users(rows, "Администраторы"), admin_users_menu(is_super_owner(role)))
         return
 
     if data == "u_promote":
         if not is_super_owner(role):
-            await say(context, chat_id, "Недостаточно прав.")
+            await say(context, chat_id, "Недостаточно прав.", admin_menu_for(role))
             return
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "promote_admin"
-        await say(context, chat_id, "Введи chat_id для назначения admin. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id для назначения admin. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_demote":
         if not is_super_owner(role):
-            await say(context, chat_id, "Недостаточно прав.")
+            await say(context, chat_id, "Недостаточно прав.", admin_menu_for(role))
             return
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "demote_admin"
-        await say(context, chat_id, "Введи chat_id для снятия роли admin. Для отмены: 'Назад'.", admin_menu_for(role))
+        await say(context, chat_id, "Введи chat_id для снятия роли admin. Для отмены: 'Назад'.", cancel_menu())
         return
 
     if data == "u_back_main":
@@ -1556,7 +1767,7 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if data.startswith("adel:"):
         _, owner_id, stored_name = data.split(":", 2)
         await revoke_client(context, owner_id, stored_name)
-        await say(context, chat_id, f"Удалено у {owner_id}: {display_name_for(owner_id, stored_name)}")
+        await say(context, chat_id, f"Удалено у {owner_id}: {display_name_for(owner_id, stored_name)}", admin_menu_for(role))
         return
 
 
@@ -1595,9 +1806,11 @@ async def sync_profiles_from_telegram(context: ContextTypes.DEFAULT_TYPE, actor_
     rows = db.all_users()
     ok = 0
     failed = 0
+    failed_rows: list[str] = []
 
     for row in rows:
         target_chat_id = str(row["chat_id"])
+        username = f"@{row['username']}" if row["username"] else "-"
         try:
             chat = await context.bot.get_chat(chat_id=int(target_chat_id))
             db.upsert_user(
@@ -1607,11 +1820,31 @@ async def sync_profiles_from_telegram(context: ContextTypes.DEFAULT_TYPE, actor_
                 getattr(chat, "last_name", None),
             )
             ok += 1
-        except Exception:
+        except Exception as exc:
             failed += 1
+            reason = str(exc).strip() or exc.__class__.__name__
+            if len(reason) > 180:
+                reason = reason[:180] + "..."
+            failed_rows.append(f"- {target_chat_id} | {username} | {reason}")
 
     db.log_event("profiles_sync", actor_chat_id, None, f"ok={ok} failed={failed}")
-    await say(context, actor_chat_id, f"Синхронизация завершена. Обновлено: {ok}, ошибок: {failed}.")
+    if not failed_rows:
+        await say(context, actor_chat_id, f"Синхронизация завершена. Обновлено: {ok}, ошибок: {failed}.", admin_menu_for(db.role(actor_chat_id)))
+        return
+
+    max_rows = 20
+    shown = failed_rows[:max_rows]
+    extra = len(failed_rows) - len(shown)
+    details = "\n".join(shown)
+    if extra > 0:
+        details += f"\n... и ещё {extra} ошибок."
+    await send_chunks(
+        context,
+        actor_chat_id,
+        f"Синхронизация завершена. Обновлено: {ok}, ошибок: {failed}.\n\n"
+        f"Пользователи с ошибкой:\n{details}",
+        admin_menu_for(db.role(actor_chat_id)),
+    )
 
 
 def register_handlers(app) -> None:

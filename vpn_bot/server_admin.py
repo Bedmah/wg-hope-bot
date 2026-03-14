@@ -89,6 +89,53 @@ def _force_table_off(config_text: str) -> str:
     return "\n".join(out).strip() + "\n"
 
 
+def _config_has_table_off(config_text: str) -> bool:
+    in_interface = False
+    for raw in config_text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_interface = line.lower() == "[interface]"
+            continue
+        if not in_interface:
+            continue
+        m = re.match(r"(?i)^table\s*=\s*(.+?)\s*$", line)
+        if m:
+            return m.group(1).strip().lower() == "off"
+    return False
+
+
+def _preflight_uplink_table_off(iface: str, kind: str, config_path: str | None) -> None:
+    if kind not in ("amneziawg", "wireguard"):
+        return
+    path = Path(config_path or _ensure_config_path(iface))
+    if not path.exists():
+        raise ValueError(
+            f"preflight failed: не найден конфиг {path}. "
+            "Сначала добавь/замени конфиг интерфейса."
+        )
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    if not _config_has_table_off(text):
+        raise ValueError(
+            f"preflight failed: в {path} должен быть 'Table = off' "
+            "в секции [Interface]."
+        )
+
+
+def _ensure_stub_config_with_table_off(iface: str, kind: str, config_path: str | None) -> None:
+    if kind not in ("amneziawg", "wireguard"):
+        return
+    path = Path(config_path or _ensure_config_path(iface))
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Minimal safe stub: keeps Table=off and lets admin replace config right after adding iface.
+    path.write_text("[Interface]\nTable = off\n", encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except Exception:
+        pass
+
+
 def list_interfaces_text() -> str:
     rows = db.list_uplink_interfaces()
     if not rows:
@@ -142,6 +189,8 @@ def add_interface(name: str, kind: str = "amneziawg", table_id: int | None = Non
         service = _ensure_service_name(iface)
         if tid is None:
             tid = db.next_table_id()
+        _ensure_stub_config_with_table_off(iface, kind, cfg)
+        _preflight_uplink_table_off(iface, kind, cfg)
     db.upsert_uplink_interface(iface, kind, cfg, service, tid, enabled=1)
     if service:
         _run("systemctl", "enable", service, check=False)
@@ -168,6 +217,7 @@ def add_or_update_region(code: str, label: str, interface_name: str, is_default:
     if int(iface_row["enabled"]) != 1:
         raise ValueError("interface is disabled")
     if iface_row["kind"] in ("amneziawg", "wireguard"):
+        _preflight_uplink_table_off(iface, iface_row["kind"], iface_row["config_path"])
         ok, details = interface_status(iface)
         if not ok:
             raise ValueError(f"interface is not ready: {details}")

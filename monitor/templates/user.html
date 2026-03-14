@@ -61,6 +61,7 @@
           <th>Последний handshake</th>
           <th>RX всего</th>
           <th>TX всего</th>
+          <th>Скорость RX/TX</th>
           <th>RX 24ч</th>
           <th>TX 24ч</th>
           <th>RX 7д</th>
@@ -71,14 +72,15 @@
       </thead>
       <tbody>
         {% for c in data.configs %}
-        <tr>
+        <tr data-peer-pub="{{ c.pub }}">
           <td>{{ c.name }}</td>
           <td>{{ c.ip }}</td>
           <td>{{ c.region_label }}</td>
           <td>{{ c.endpoint }}</td>
-          <td>{{ c.latest_handshake }}</td>
-          <td>{{ c.rx_total }}</td>
-          <td>{{ c.tx_total }}</td>
+          <td><span class="rt-last-hs">{{ c.latest_handshake }}</span></td>
+          <td><span class="rt-rx">{{ c.rx_total }}</span></td>
+          <td><span class="rt-tx">{{ c.tx_total }}</span></td>
+          <td><span class="rt-rx-rate">{{ c.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ c.tx_rate_mbps }}</span> Мбит/с</td>
           <td>{{ c.rx_24h }}</td>
           <td>{{ c.tx_24h }}</td>
           <td>{{ c.rx_7d }}</td>
@@ -202,7 +204,7 @@
     {% endif %}
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script>
     const labels = {{ data.labels | tojson }};
     const userTraffic = {{ data.user_traffic_series | tojson }}.map(v => +(v / (1024 ** 3)).toFixed(2));
@@ -211,71 +213,85 @@
     const ru = (v) => Number(v).toFixed(2).replace('.', ',');
 
     const scope = {{ data.filters.graph_scope | tojson }};
-    if (scope !== "none" && scope !== "config") {
+    const period = {{ data.filters.period | tojson }};
+    let userChart = null;
+    const cfgCharts = {};
+    const initialCfgRows = {{ data.configs | tojson }};
+    const cfgCanvasByPub = {};
+    initialCfgRows.forEach((row, i) => { cfgCanvasByPub[row.pub] = 'cfgChart' + (i + 1); });
+
+    function upsertUserChart(nextLabels, nextTraffic, nextSpeed, nextHs) {
+      if (scope === "none" || scope === "config") return;
       const n = document.getElementById('userCombinedChart');
-      if (n) {
-        new Chart(n, {
-          data: {
-            labels,
-            datasets: [
-              { type: 'bar', label: 'Трафик, ГБ/бакет', data: userTraffic, yAxisID: 'yGb', backgroundColor: 'rgba(31,103,210,0.42)' },
-              { type: 'line', label: 'Средняя скорость, Мбит/с', data: userSpeed, yAxisID: 'ySpeed', borderColor: '#e07a11', tension: 0.2, pointRadius: 1.5 },
-              { type: 'line', label: 'Handshake/бакет', data: userHs, yAxisID: 'yHs', borderColor: '#16925c', tension: 0.2, pointRadius: 1.5 }
-            ]
+      if (!n) return;
+      if (userChart) {
+        userChart.data.labels = nextLabels;
+        userChart.data.datasets[0].data = nextTraffic;
+        userChart.data.datasets[1].data = nextSpeed;
+        userChart.data.datasets[2].data = nextHs;
+        userChart.update('none');
+        return;
+      }
+      userChart = new Chart(n, {
+        data: {
+          labels: nextLabels,
+          datasets: [
+            { type: 'bar', label: 'Traffic, GB/bucket', data: nextTraffic, yAxisID: 'yGb', backgroundColor: 'rgba(31,103,210,0.42)' },
+            { type: 'line', label: 'Average speed, Mbps', data: nextSpeed, yAxisID: 'ySpeed', borderColor: '#e07a11', tension: 0.2, pointRadius: 1.5 },
+            { type: 'line', label: 'Handshake/bucket', data: nextHs, yAxisID: 'yHs', borderColor: '#16925c', tension: 0.2, pointRadius: 1.5 }
+          ]
+        },
+        options: {
+          responsive: false,
+          maintainAspectRatio: true,
+          scales: {
+            yGb: { position: 'left', beginAtZero: true, title: { display: true, text: 'GB' }, ticks: { callback: (v) => ru(v) } },
+            ySpeed: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Mbps' }, ticks: { callback: (v) => ru(v) } },
+            yHs: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, display: false }
           },
-          options: {
-            responsive: false,
-            maintainAspectRatio: true,
-            scales: {
-              yGb: {
-                position: 'left',
-                beginAtZero: true,
-                title: { display: true, text: 'ГБ' },
-                ticks: { callback: (v) => ru(v) }
-              },
-              ySpeed: {
-                position: 'right',
-                beginAtZero: true,
-                grid: { drawOnChartArea: false },
-                title: { display: true, text: 'Мбит/с' },
-                ticks: { callback: (v) => ru(v) }
-              },
-              yHs: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, display: false }
-            },
-            plugins: {
-              legend: { display: true },
-              tooltip: {
-                callbacks: {
-                  label: (ctx) => {
-                    const l = ctx.dataset.label || '';
-                    if (l.includes('ГБ') || l.includes('Мбит')) {
-                      return `${l}: ${ru(ctx.parsed.y)}`;
-                    }
-                    return `${l}: ${ctx.parsed.y}`;
-                  }
+          plugins: {
+            legend: { display: true },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const l = ctx.dataset.label || '';
+                  if (l.includes('GB') || l.includes('Mbps')) return `${l}: ${ru(ctx.parsed.y)}`;
+                  return `${l}: ${ctx.parsed.y}`;
                 }
               }
             }
           }
-        });
-      }
+        }
+      });
     }
 
-    if (scope !== "none" && scope !== "user") {
-      const cfg = {{ data.configs | tojson }};
-      cfg.forEach((row, i) => {
-        const id = 'cfgChart' + (i + 1);
+    function upsertConfigCharts(nextLabels, cfgRows) {
+      if (scope === 'none' || scope === 'user') return;
+      cfgRows.forEach((row, i) => {
+        const id = cfgCanvasByPub[row.pub] || ('cfgChart' + (i + 1));
         const node = document.getElementById(id);
         if (!node) return;
-        const trafficGb = row.traffic_series.map(v => +(v / (1024 ** 3)).toFixed(4));
-        const speed = row.speed_series_bps.map(v => +(v / 1_000_000).toFixed(2));
-        new Chart(node, {
+        const trafficGb = (row.traffic_series_gb || row.traffic_series || []).map(v => +Number(v).toFixed(4));
+        const speed = (row.speed_series_mbps || row.speed_series_bps || []).map(v => {
+          if (row.speed_series_bps) return +(Number(v || 0) / 1_000_000).toFixed(2);
+          return +Number(v || 0).toFixed(2);
+        });
+        const hs = row.handshake_series || [];
+        if (cfgCharts[row.pub]) {
+          cfgCharts[row.pub].data.labels = nextLabels;
+          cfgCharts[row.pub].data.datasets[0].data = trafficGb;
+          cfgCharts[row.pub].data.datasets[1].data = speed;
+          cfgCharts[row.pub].data.datasets[2].data = hs;
+          cfgCharts[row.pub].update('none');
+          return;
+        }
+        cfgCharts[row.pub] = new Chart(node, {
           data: {
-            labels,
+            labels: nextLabels,
             datasets: [
-              { type: 'bar', label: 'Трафик, ГБ', data: trafficGb, yAxisID: 'yGb', backgroundColor: 'rgba(45,108,223,0.46)' },
-              { type: 'line', label: 'Средняя скорость, Мбит/с', data: speed, yAxisID: 'ySpeed', borderColor: '#e48a1d', tension: 0.2, pointRadius: 1.2 },
-              { type: 'line', label: 'Handshake', data: row.handshake_series, yAxisID: 'yHs', borderColor: '#129a5a', tension: 0.2, pointRadius: 1.2 }
+              { type: 'bar', label: 'Traffic, GB', data: trafficGb, yAxisID: 'yGb', backgroundColor: 'rgba(45,108,223,0.46)' },
+              { type: 'line', label: 'Average speed, Mbps', data: speed, yAxisID: 'ySpeed', borderColor: '#e48a1d', tension: 0.2, pointRadius: 1.2 },
+              { type: 'line', label: 'Handshake', data: hs, yAxisID: 'yHs', borderColor: '#129a5a', tension: 0.2, pointRadius: 1.2 }
             ]
           },
           options: {
@@ -292,9 +308,7 @@
                 callbacks: {
                   label: (ctx) => {
                     const l = ctx.dataset.label || '';
-                    if (l.includes('ГБ') || l.includes('Мбит')) {
-                      return `${l}: ${ru(ctx.parsed.y)}`;
-                    }
+                    if (l.includes('GB') || l.includes('Mbps')) return `${l}: ${ru(ctx.parsed.y)}`;
                     return `${l}: ${ctx.parsed.y}`;
                   }
                 }
@@ -304,6 +318,46 @@
         });
       });
     }
+
+    upsertUserChart(labels, userTraffic, userSpeed, userHs);
+    upsertConfigCharts(labels, initialCfgRows);
+
+    async function pollRealtimeUser() {
+      try {
+        const res = await fetch('/api/realtime/user/{{ data.user.chat_id }}', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const byPub = {};
+        (data.configs || []).forEach((c) => { byPub[c.pub] = c; });
+        document.querySelectorAll('tr[data-peer-pub]').forEach((row) => {
+          const c = byPub[row.dataset.peerPub];
+          if (!c) return;
+          const hs = row.querySelector('.rt-last-hs');
+          const rx = row.querySelector('.rt-rx');
+          const tx = row.querySelector('.rt-tx');
+          const rxr = row.querySelector('.rt-rx-rate');
+          const txr = row.querySelector('.rt-tx-rate');
+          if (hs) hs.textContent = c.latest_handshake ?? '-';
+          if (rx) rx.textContent = c.rx_total ?? '-';
+          if (tx) tx.textContent = c.tx_total ?? '-';
+          if (rxr) rxr.textContent = c.rx_rate_mbps ?? 0;
+          if (txr) txr.textContent = c.tx_rate_mbps ?? 0;
+        });
+      } catch (e) {}
+    }
+
+    async function pollRealtimeUserCharts() {
+      try {
+        const res = await fetch('/api/realtime/user/{{ data.user.chat_id }}/charts?period=' + encodeURIComponent(period), { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        upsertUserChart(data.labels || [], data.user_traffic_series_gb || [], data.user_speed_series_mbps || [], data.user_handshake_series || []);
+        upsertConfigCharts(data.labels || [], data.configs || []);
+      } catch (e) {}
+    }
+
+    setInterval(pollRealtimeUser, 5000);
+    setInterval(pollRealtimeUserCharts, 5000);
   </script>
 </body>
 </html>

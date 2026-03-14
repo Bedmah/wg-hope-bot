@@ -5,11 +5,15 @@ from telegram import ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardBu
 
 BUTTON_ADD = "Добавить"
 BUTTON_LIST = "Список"
-BUTTON_GUIDE = "Инструкция"
+BUTTON_INFO = "Информация"
 BUTTON_REGION = "Регион"
 BUTTON_SUPPORT = "Вопросы / Поддержка"
 BUTTON_ADMIN = "Админка"
 BUTTON_BACK = "Назад"
+BUTTON_I_GUIDE = "Инструкция"
+BUTTON_I_REGIONS = "Регионы"
+BUTTON_I_ABOUT = "О проекте"
+BUTTON_I_WIREGUARD = "WireGuard"
 
 BUTTON_A_USERS = "Пользователи"
 BUTTON_A_CLIENTS = "Конфиги пользователей"
@@ -34,19 +38,23 @@ BUTTON_U_DEMOTE = "Снять админа"
 BUTTON_L_RECENT = "Последние 50"
 BUTTON_L_BY_USER = "По chat_id"
 BUTTON_L_CHAT_FILE = "Скачать чат"
+BUTTON_L_POSTBOOT_TEST = "Ручной тест"
 
 BUTTON_P_STATUS = "Проверить статус"
 BUTTON_P_SUPPORT = "Доступ / Вопросы"
 
 BUTTON_C_VIEW = "Показать тексты"
 BUTTON_C_GUIDE = "Изменить инструкцию"
+BUTTON_C_REGIONS = "Изменить регионы"
+BUTTON_C_ABOUT = "Изменить о проекте"
+BUTTON_C_WIREGUARD = "Изменить WireGuard"
 BUTTON_C_SUPPORT = "Изменить поддержку"
 
 BUTTON_S_LIST_IFACES = "Интерфейсы"
 BUTTON_S_ADD_IFACE = "Добавить интерфейс"
 BUTTON_S_DEL_IFACE = "Удалить интерфейс"
 BUTTON_S_CFG_IFACE = "Заменить конфиг"
-BUTTON_S_LIST_REGIONS = "Регионы"
+BUTTON_S_LIST_REGIONS = "Список регионов"
 BUTTON_S_ADD_REGION = "Добавить/изменить регион"
 BUTTON_S_DEL_REGION = "Удалить регион"
 BUTTON_S_DEFAULT_REGION = "Регион по умолчанию"
@@ -63,7 +71,7 @@ BUTTON_B_NEXT = "Далее к тексту"
 def bottom_menu(is_admin: bool) -> ReplyKeyboardMarkup:
     rows = [
         [BUTTON_ADD, BUTTON_LIST],
-        [BUTTON_GUIDE, BUTTON_REGION],
+        [BUTTON_INFO, BUTTON_REGION],
         [BUTTON_SUPPORT],
     ]
     if is_admin:
@@ -99,7 +107,7 @@ def admin_logs_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_L_RECENT, BUTTON_L_BY_USER],
-            [BUTTON_L_CHAT_FILE],
+            [BUTTON_L_CHAT_FILE, BUTTON_L_POSTBOOT_TEST],
             [BUTTON_BACK],
         ],
         resize_keyboard=True,
@@ -123,8 +131,20 @@ def admin_customize_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_C_VIEW],
-            [BUTTON_C_GUIDE],
+            [BUTTON_C_GUIDE, BUTTON_C_REGIONS],
+            [BUTTON_C_ABOUT, BUTTON_C_WIREGUARD],
             [BUTTON_C_SUPPORT],
+            [BUTTON_BACK],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def info_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_I_GUIDE, BUTTON_I_REGIONS],
+            [BUTTON_I_ABOUT, BUTTON_I_WIREGUARD],
             [BUTTON_BACK],
         ],
         resize_keyboard=True,
@@ -249,6 +269,7 @@ def logs_kb() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Последние 50", callback_data="a_logs_recent")],
             [InlineKeyboardButton("По chat_id", callback_data="a_logs_user")],
             [InlineKeyboardButton("Скачать чат", callback_data="a_logs_chat_file")],
+            [InlineKeyboardButton("Ручной тест", callback_data="a_logs_postboot_test")],
             [InlineKeyboardButton("Назад", callback_data="u_back_main")],
         ]
     )

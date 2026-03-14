@@ -1,0 +1,13 @@
+[Unit]
+Description=WG Hope Post-Reboot Healthcheck and Telegram Report
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+ConditionPathExists=/opt/wg-hope-bot/.env
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/wg-hope-bot
+EnvironmentFile=/opt/wg-hope-bot/.env
+ExecStart=/opt/wg-hope-bot/.venv/bin/python /opt/wg-hope-bot/deploy/scripts/post_reboot_healthcheck.py
+User=root
+

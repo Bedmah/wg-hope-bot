@@ -5,24 +5,58 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WG Monitor - Пользователи</title>
   <style>
-    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
-    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; }
-    .links a { margin-left:10px; color:#1252b7; text-decoration:none; }
+    :root {
+      --bg:#f4f6fb;
+      --panel:#ffffff;
+      --line:#dbe3ef;
+      --muted:#687789;
+      --txt:#1f2a37;
+      --blue:#1b5fc8;
+      --blue-soft:#ecf3ff;
+      --ok:#19753a;
+      --warn:#9a6200;
+      --bad:#b12121;
+    }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:var(--bg); color:var(--txt); }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+    .links a { margin-left:10px; color:var(--blue); text-decoration:none; }
     .wrap { padding:16px 20px; }
-    table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #dde4ee; }
+    .muted { color:var(--muted); font-size:12px; }
+    .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-bottom:12px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+    .k { font-size:12px; color:var(--muted); margin-bottom:6px; }
+    .v { font-size:22px; font-weight:700; line-height:1.1; }
+    .sub { font-size:12px; margin-top:4px; color:var(--muted); }
+    .good { color:var(--ok); }
+    .warn { color:var(--warn); }
+    .bad { color:var(--bad); }
+    .summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:10px; margin-bottom:12px; }
+    .summary .card { background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%); }
+    .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; background:var(--panel); border:1px solid var(--line); padding:10px; border-radius:10px; margin-bottom:10px; }
+    .filters input, .filters select { padding:8px; border:1px solid #c8d0da; border-radius:8px; font-size:13px; }
+    .btn { padding:8px 12px; border-radius:8px; border:1px solid var(--blue); background:var(--blue); color:#fff; text-decoration:none; font-size:13px; cursor:pointer; }
+    .btn-muted { background:#fff; color:var(--blue); }
+    .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:10px; margin-bottom:12px; }
+    .chart-box { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px; overflow:auto; }
+    .pending-table { width:100%; border-collapse:collapse; }
+    .pending-table th, .pending-table td { padding:6px; border-bottom:1px solid #eef2f7; font-size:12px; text-align:left; }
+    .pending-table th { color:var(--muted); font-weight:600; }
+    .meter { height:8px; background:#eef2f7; border-radius:999px; overflow:hidden; margin-top:4px; }
+    .meter > span { display:block; height:100%; background:#2f7ae0; }
+    .load-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); }
     th, td { padding:9px 8px; border-bottom:1px solid #eef2f7; font-size:13px; text-align:left; vertical-align:top; }
-    th { background:#f1f5fa; }
+    th { background:#f0f5fc; position:sticky; top:58px; z-index:2; }
     tr:hover td { background:#fafcff; }
-    .muted { color:#6a7583; font-size:12px; }
-    .name a { color:#1252b7; text-decoration:none; font-weight:600; }
-    .role { font-size:12px; padding:2px 6px; border-radius:8px; background:#ebf2ff; display:inline-block; }
+    .name a { color:var(--blue); text-decoration:none; font-weight:600; }
+    .role { font-size:12px; padding:2px 6px; border-radius:8px; background:var(--blue-soft); display:inline-block; }
   </style>
 </head>
 <body>
   <div class="top">
     <div>
       <strong>WG Hope Monitor</strong>
-      <span class="muted">Обновлено: {{ updated_at }}</span>
+      <span class="muted">Обновлено: <span id="rt-updated-at">{{ updated_at }}</span></span>
     </div>
     <div class="links">
       <span class="muted">Время сервера: {{ server_time }}</span>
@@ -32,7 +66,126 @@
       <a href="/logout">Выйти</a>
     </div>
   </div>
+
   <div class="wrap">
+    <div class="stats">
+      <div class="card"><div class="k">Пользователи всего</div><div class="v">{{ stats.total_users }}</div></div>
+      <div class="card"><div class="k">Показано по фильтру</div><div class="v">{{ stats.filtered_users }}</div></div>
+      <div class="card"><div class="k">Активные за 24ч</div><div class="v good">{{ stats.active_users_24h }}</div></div>
+      <div class="card"><div class="k">Конфигов всего</div><div class="v">{{ stats.total_configs }}</div></div>
+      <div class="card"><div class="k">Ожидают</div><div class="v warn">{{ stats.pending_users }}</div></div>
+      <div class="card"><div class="k">Забанены</div><div class="v bad">{{ stats.banned_users }}</div></div>
+      <div class="card"><div class="k">Админы</div><div class="v">{{ stats.admins_total }}</div></div>
+      <div class="card"><div class="k">Handshake 24ч</div><div class="v">{{ stats.handshakes_24h }}</div><div class="sub">7д: {{ stats.handshakes_7d }}</div></div>
+    </div>
+
+    <div class="summary">
+      <div class="card">
+        <div class="k">Сетевой итог по пользователям</div>
+        <div><strong>RX:</strong> <span id="rt-total-rx">{{ stats.traffic_rx_total }}</span></div>
+        <div><strong>TX:</strong> <span id="rt-total-tx">{{ stats.traffic_tx_total }}</span></div>
+        <div><strong>Скорость RX/TX:</strong> <span id="rt-total-rx-rate">{{ stats.rx_rate_total_mbps }}</span> / <span id="rt-total-tx-rate">{{ stats.tx_rate_total_mbps }}</span> Мбит/с</div>
+      </div>
+      <div class="card">
+        <div class="k">Быстрые действия</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <a class="btn btn-muted" href="/servers">Открыть «Серверы»</a>
+          <a class="btn btn-muted" href="/settings">Открыть «Настройки»</a>
+        </div>
+        <div class="sub" style="margin-top:8px;">Ручной тест запускается в боте: <strong>Админка -> Логи -> Ручной тест</strong>.</div>
+      </div>
+    </div>
+
+    <div class="charts">
+      <div class="chart-box">
+        <div class="k">Распределение ролей</div>
+        <canvas id="rolesChart" width="460" height="220"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="k">Топ регионов по количеству конфигов</div>
+        <canvas id="regionsChart" width="460" height="220"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="k">Новые заявки (pending)</div>
+        <table class="pending-table">
+          <thead>
+            <tr>
+              <th>Пользователь</th>
+              <th>chat_id</th>
+              <th>Запрос доступа</th>
+            </tr>
+          </thead>
+          <tbody id="pending-rows">
+            {% for p in pending_requests %}
+            <tr>
+              <td>{% if p.username %}@{{ p.username }}{% elif p.full_name %}{{ p.full_name }}{% else %}-{% endif %}</td>
+              <td>{{ p.chat_id }}</td>
+              <td>{{ p.requested_at }}</td>
+            </tr>
+            {% endfor %}
+            {% if not pending_requests %}
+            <tr><td colspan="3" class="muted">Новых заявок нет</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+      <div class="chart-box">
+        <div class="k">Нагрузка сервера</div>
+        <div class="load-grid">
+          <div>
+            <div>CPU: <strong id="load-cpu">{{ server_load.cpu_percent if server_load else 0 }}</strong>%</div>
+            <div class="meter"><span id="load-cpu-bar" style="width:{{ server_load.cpu_percent if server_load else 0 }}%"></span></div>
+          </div>
+          <div>
+            <div>RAM: <strong id="load-mem">{{ server_load.mem_percent if server_load else 0 }}</strong>%</div>
+            <div class="meter"><span id="load-mem-bar" style="width:{{ server_load.mem_percent if server_load else 0 }}%"></span></div>
+          </div>
+          <div>
+            <div>Disk: <strong id="load-disk">{{ server_load.disk_percent if server_load else 0 }}</strong>%</div>
+            <div class="meter"><span id="load-disk-bar" style="width:{{ server_load.disk_percent if server_load else 0 }}%"></span></div>
+          </div>
+          <div>
+            <div>Load avg: <strong id="load-avg">{% if server_load %}{{ server_load.load1 }}/{{ server_load.load5 }}/{{ server_load.load15 }}{% else %}0/0/0{% endif %}</strong></div>
+            <div class="muted">Uptime: <span id="load-uptime">{% if server_load %}{{ server_load.uptime_hours }}{% else %}0{% endif %}</span> ч</div>
+          </div>
+        </div>
+        <div class="muted">RAM: <span id="load-mem-bytes">{% if server_load %}{{ server_load.mem_used }} / {{ server_load.mem_total }}{% else %}-{% endif %}</span></div>
+        <div class="muted">Disk: <span id="load-disk-bytes">{% if server_load %}{{ server_load.disk_used }} / {{ server_load.disk_total }}{% else %}-{% endif %}</span></div>
+      </div>
+    </div>
+
+    <form class="filters" method="get" action="/">
+      <input type="text" name="q" placeholder="Поиск: chat_id, @username, имя, регион, назначения" value="{{ filters.q }}" style="min-width:320px;" />
+      <select name="role">
+        <option value="" {% if not filters.role %}selected{% endif %}>Все роли</option>
+        <option value="super_owner" {% if filters.role == "super_owner" %}selected{% endif %}>super_owner</option>
+        <option value="admin" {% if filters.role == "admin" %}selected{% endif %}>admin</option>
+        <option value="user" {% if filters.role == "user" %}selected{% endif %}>user</option>
+        <option value="pending" {% if filters.role == "pending" %}selected{% endif %}>pending</option>
+        <option value="banned" {% if filters.role == "banned" %}selected{% endif %}>banned</option>
+      </select>
+      <select name="has_configs">
+        <option value="" {% if not filters.has_configs %}selected{% endif %}>Конфиги: все</option>
+        <option value="yes" {% if filters.has_configs == "yes" %}selected{% endif %}>С конфигами</option>
+        <option value="no" {% if filters.has_configs == "no" %}selected{% endif %}>Без конфигов</option>
+      </select>
+      <select name="activity">
+        <option value="" {% if not filters.activity %}selected{% endif %}>Активность 24ч: все</option>
+        <option value="active24" {% if filters.activity == "active24" %}selected{% endif %}>Активные 24ч</option>
+        <option value="inactive24" {% if filters.activity == "inactive24" %}selected{% endif %}>Неактивные 24ч</option>
+      </select>
+      <select name="seen">
+        <option value="" {% if not filters.seen %}selected{% endif %}>Последняя активность: все</option>
+        <option value="24h" {% if filters.seen == "24h" %}selected{% endif %}>За 24 часа</option>
+        <option value="7d" {% if filters.seen == "7d" %}selected{% endif %}>За 7 дней</option>
+        <option value="30d" {% if filters.seen == "30d" %}selected{% endif %}>За 30 дней</option>
+        <option value="never" {% if filters.seen == "never" %}selected{% endif %}>Без активности</option>
+      </select>
+      <button class="btn" type="submit">Применить</button>
+      <a class="btn btn-muted" href="/">Сбросить</a>
+      <span class="muted">Найдено: {{ users|length }}</span>
+    </form>
+
     <table>
       <thead>
         <tr>
@@ -45,6 +198,7 @@
           <th>Handshake 7д</th>
           <th>RX (всего)</th>
           <th>TX (всего)</th>
+          <th>Скорость RX/TX</th>
           <th>Последний handshake</th>
           <th>Последняя активность в боте</th>
           <th>Топ назначения 24ч</th>
@@ -53,7 +207,7 @@
       </thead>
       <tbody>
         {% for u in users %}
-        <tr>
+        <tr data-chat-id="{{ u.chat_id }}">
           <td class="name">
             <a href="/user/{{ u.chat_id }}">
               {% if u.username %}@{{ u.username }}{% elif u.full_name %}{{ u.full_name }}{% else %}(без имени){% endif %}
@@ -65,9 +219,10 @@
           <td>{{ u.active_configs_24h }}</td>
           <td>{{ u.handshakes_24h }}</td>
           <td>{{ u.handshakes_7d }}</td>
-          <td>{{ u.total_rx }}</td>
-          <td>{{ u.total_tx }}</td>
-          <td>{{ u.last_handshake }}</td>
+          <td><span class="rt-rx">{{ u.total_rx }}</span></td>
+          <td><span class="rt-tx">{{ u.total_tx }}</span></td>
+          <td><span class="rt-rx-rate">{{ u.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ u.tx_rate_mbps }}</span> Мбит/с</td>
+          <td><span class="rt-last-hs">{{ u.last_handshake }}</span></td>
           <td>{{ u.last_seen }}</td>
           <td>{{ u.top_destinations }}</td>
           <td>{{ u.configs_regions }}</td>
@@ -76,5 +231,120 @@
       </tbody>
     </table>
   </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script>
+    const charts = {{ charts | tojson }};
+    const chartRefs = {};
+    function renderBar(canvasId, rows, color) {
+      const node = document.getElementById(canvasId);
+      if (!node || !rows || rows.length === 0) return;
+      const labels = rows.map(x => x.label);
+      const values = rows.map(x => Number(x.value || 0));
+      if (!values.some(v => v > 0)) return;
+      if (chartRefs[canvasId]) {
+        chartRefs[canvasId].data.labels = labels;
+        chartRefs[canvasId].data.datasets[0].data = values;
+        chartRefs[canvasId].update("none");
+        return;
+      }
+      chartRefs[canvasId] = new Chart(node, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{ data: values, backgroundColor: color, borderRadius: 8 }]
+        },
+        options: {
+          responsive: false,
+          maintainAspectRatio: true,
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+    }
+    renderBar('rolesChart', charts.roles, 'rgba(27,95,200,0.55)');
+    renderBar('regionsChart', charts.regions, 'rgba(214,126,20,0.55)');
+
+    function renderPending(list) {
+      const body = document.getElementById('pending-rows');
+      if (!body) return;
+      const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');
+      if (!list || list.length === 0) {
+        body.innerHTML = '<tr><td colspan=\"3\" class=\"muted\">Новых заявок нет</td></tr>';
+        return;
+      }
+      body.innerHTML = list.map((p) => {
+        const title = p.username ? '@' + p.username : (p.full_name || '-');
+        return `<tr><td>${esc(title)}</td><td>${esc(p.chat_id || '-')}</td><td>${esc(p.requested_at || '-')}</td></tr>`;
+      }).join('');
+    }
+
+    function renderLoad(load) {
+      if (!load) return;
+      const cpu = Number(load.cpu_percent || 0);
+      const mem = Number(load.mem_percent || 0);
+      const disk = Number(load.disk_percent || 0);
+      const setTxt = (id, v) => { const n = document.getElementById(id); if (n) n.textContent = v; };
+      const setW = (id, v) => { const n = document.getElementById(id); if (n) n.style.width = Math.max(0, Math.min(100, v)) + '%'; };
+      setTxt('load-cpu', cpu.toFixed(1));
+      setTxt('load-mem', mem.toFixed(1));
+      setTxt('load-disk', disk.toFixed(1));
+      setW('load-cpu-bar', cpu);
+      setW('load-mem-bar', mem);
+      setW('load-disk-bar', disk);
+      setTxt('load-avg', `${load.load1 ?? 0}/${load.load5 ?? 0}/${load.load15 ?? 0}`);
+      setTxt('load-uptime', `${load.uptime_hours ?? 0}`);
+      setTxt('load-mem-bytes', `${load.mem_used ?? '-'} / ${load.mem_total ?? '-'}`);
+      setTxt('load-disk-bytes', `${load.disk_used ?? '-'} / ${load.disk_total ?? '-'}`);
+    }
+
+    async function pollRealtime() {
+      try {
+        const qp = new URLSearchParams(window.location.search);
+        const ids = Array.from(document.querySelectorAll('tr[data-chat-id]')).map(r => r.dataset.chatId).filter(Boolean);
+        if (ids.length > 0) qp.set('chat_ids', ids.join(','));
+        const res = await fetch('/api/realtime/dashboard?' + qp.toString(), { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.updated_at) {
+          const n = document.getElementById('rt-updated-at');
+          if (n) n.textContent = data.updated_at;
+        }
+        if (data.stats) {
+          const rx = document.getElementById('rt-total-rx');
+          const tx = document.getElementById('rt-total-tx');
+          const rxr = document.getElementById('rt-total-rx-rate');
+          const txr = document.getElementById('rt-total-tx-rate');
+          if (rx) rx.textContent = data.stats.traffic_rx_total ?? '-';
+          if (tx) tx.textContent = data.stats.traffic_tx_total ?? '-';
+          if (rxr) rxr.textContent = data.stats.rx_rate_total_mbps ?? 0;
+          if (txr) txr.textContent = data.stats.tx_rate_total_mbps ?? 0;
+        }
+        if (data.charts) {
+          renderBar('rolesChart', data.charts.roles || [], 'rgba(27,95,200,0.55)');
+          renderBar('regionsChart', data.charts.regions || [], 'rgba(214,126,20,0.55)');
+        }
+        renderPending(data.pending_requests || []);
+        renderLoad(data.server_load || {});
+        const users = data.users || {};
+        document.querySelectorAll('tr[data-chat-id]').forEach((row) => {
+          const id = row.dataset.chatId;
+          const u = users[id];
+          if (!u) return;
+          const rx = row.querySelector('.rt-rx');
+          const tx = row.querySelector('.rt-tx');
+          const rxr = row.querySelector('.rt-rx-rate');
+          const txr = row.querySelector('.rt-tx-rate');
+          const hs = row.querySelector('.rt-last-hs');
+          if (rx) rx.textContent = u.total_rx ?? '-';
+          if (tx) tx.textContent = u.total_tx ?? '-';
+          if (rxr) rxr.textContent = u.rx_rate_mbps ?? 0;
+          if (txr) txr.textContent = u.tx_rate_mbps ?? 0;
+          if (hs) hs.textContent = u.last_handshake ?? '-';
+        });
+      } catch (e) {}
+    }
+    setInterval(pollRealtime, 5000);
+  </script>
 </body>
 </html>

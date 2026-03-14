@@ -23,6 +23,21 @@ DEFAULT_USER_GUIDE = (
 )
 
 DEFAULT_SUPPORT_TEXT = f"Пиши сюда: {SUPPORT_HANDLE}"
+DEFAULT_REGIONS_TEXT = (
+    "Регионы:\n"
+    "- Москва: прямой выход через сервер.\n"
+    "- Латвия: выход через uplink.\n"
+    "Выбирай регион в разделе 'Регион'."
+)
+DEFAULT_ABOUT_TEXT = (
+    "О проекте:\n"
+    "Сервис выдаёт персональные VPN-конфиги WireGuard и позволяет менять регион выхода в интернет."
+)
+DEFAULT_WIREGUARD_TEXT = (
+    "WireGuard:\n"
+    "Используйте официальный клиент WireGuard.\n"
+    "Импортируйте .conf или QR из бота, включите туннель и проверьте подключение."
+)
 
 
 def get_user_guide() -> str:
@@ -31,6 +46,18 @@ def get_user_guide() -> str:
 
 def get_support_text() -> str:
     return db.get_bot_text("support_text", DEFAULT_SUPPORT_TEXT)
+
+
+def get_regions_text() -> str:
+    return db.get_bot_text("regions_text", DEFAULT_REGIONS_TEXT)
+
+
+def get_about_text() -> str:
+    return db.get_bot_text("about_text", DEFAULT_ABOUT_TEXT)
+
+
+def get_wireguard_text() -> str:
+    return db.get_bot_text("wireguard_text", DEFAULT_WIREGUARD_TEXT)
 
 
 def safe_name(name: str) -> str:
@@ -290,18 +317,24 @@ def purge_user_clients(owner_chat_id: str) -> int:
     return removed
 
 
-def format_users(rows) -> str:
+def format_users(rows, title: str = "Пользователи") -> str:
     if not rows:
         return "Пользователей нет."
 
-    lines = ["Пользователи:"]
-    for row in rows:
+    lines = [f"{title}: {len(rows)}"]
+    for idx, row in enumerate(rows, start=1):
         login = f"@{row['username']}" if row["username"] else "(без username)"
         full_name = " ".join(x for x in [row["first_name"], row["last_name"]] if x) or "(без имени)"
         last_seen = row["last_seen"] or "-"
-        lines.append(
-            f"- {login} | {full_name} | chat_id={row['chat_id']} | роль={row['role']} | "
-            f"лимит={row['max_clients']} | создан={row['created_at']} | last_seen={last_seen}"
+        lines.extend(
+            [
+                f"{idx}. {login} ({full_name})",
+                f"chat_id: {row['chat_id']}",
+                f"роль: {row['role']} | лимит: {row['max_clients']}",
+                f"создан: {row['created_at']}",
+                f"последняя активность: {last_seen}",
+                "",
+            ]
         )
     return "\n".join(lines)
 

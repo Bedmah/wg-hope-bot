@@ -1,0 +1,12 @@
+[Unit]
+Description=Run WG Hope post-reboot healthcheck after boot (2m and 5m)
+
+[Timer]
+OnBootSec=2min
+OnBootSec=5min
+AccuracySec=30s
+Unit=wg-hope-postboot-check.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

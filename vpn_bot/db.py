@@ -14,7 +14,7 @@ from .regions import (
 from .settings import DB_PATH, SUPER_OWNER_CHAT_ID, DEFAULT_USER_LIMIT, ADMIN_LIMIT
 
 ROLES = ("super_owner", "admin", "user", "pending", "banned")
-BOT_TEXT_KEYS = ("user_guide", "support_text")
+BOT_TEXT_KEYS = ("user_guide", "regions_text", "about_text", "wireguard_text", "support_text")
 UPLINK_TYPES = ("system", "amneziawg", "wireguard")
 
 
@@ -290,6 +290,21 @@ def init() -> None:
                 "3) Импортируй конфиг в приложение WireGuard (iOS/Android/Windows/macOS/Linux).\n"
                 "4) Активируй туннель.\n"
                 "5) Если не работает, проверь время на устройстве, интернет и что UDP-порт сервера доступен."
+            ),
+            "regions_text": (
+                "Регионы:\n"
+                "- Москва: прямой выход через сервер.\n"
+                "- Латвия: выход через uplink.\n"
+                "Выбирай регион в разделе 'Регион'."
+            ),
+            "about_text": (
+                "О проекте:\n"
+                "Сервис выдаёт персональные VPN-конфиги WireGuard и позволяет менять регион выхода в интернет."
+            ),
+            "wireguard_text": (
+                "WireGuard:\n"
+                "Используйте официальный клиент WireGuard.\n"
+                "Импортируйте .conf или QR из бота, включите туннель и проверьте подключение."
             ),
             "support_text": "Пиши сюда: @support",
         }

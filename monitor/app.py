@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+from collections import Counter
 import hashlib
 import os
 import re
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -27,6 +28,7 @@ WEB_SECRET = os.environ.get("WEB_SECRET", "change-me-monitor-secret")
 MONITOR_POLL_SEC = int(os.environ.get("MONITOR_POLL_SEC", "30"))
 MONITOR_KEEP_DAYS = int(os.environ.get("MONITOR_KEEP_DAYS", "90"))
 DNS_CACHE_DAYS = int(os.environ.get("MONITOR_DNS_CACHE_DAYS", "7"))
+PENDING_PREVIEW_LIMIT = int(os.environ.get("MONITOR_PENDING_PREVIEW_LIMIT", "20"))
 
 SERVICE_BY_PORT = {
     53: "DNS",
@@ -44,17 +46,33 @@ SERVICE_BY_PORT = {
 app = FastAPI(title="WG Hope Monitor")
 app.add_middleware(SessionMiddleware, secret_key=WEB_SECRET)
 
+_CPU_PREV_TOTAL: int | None = None
+_CPU_PREV_IDLE: int | None = None
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def epoch_to_iso(epoch: int) -> str:
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def server_time_str() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def iso_to_local_str(ts: str | None, fallback: str = "-") -> str:
+    raw = (ts or "").strip()
+    if not raw:
+        return fallback
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except Exception:
+        return raw
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def db_conn() -> sqlite3.Connection:
@@ -610,6 +628,102 @@ def fmt2(value: float) -> str:
     return f"{float(value):.2f}".replace(".", ",")
 
 
+def _read_proc_meminfo() -> dict[str, int]:
+    info: dict[str, int] = {}
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8", errors="ignore").splitlines():
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            parts = v.strip().split()
+            if not parts:
+                continue
+            info[k.strip()] = int(parts[0])
+    except Exception:
+        pass
+    return info
+
+
+def _cpu_usage_percent() -> float:
+    global _CPU_PREV_TOTAL, _CPU_PREV_IDLE
+    try:
+        line = Path("/proc/stat").read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        parts = line.split()
+        nums = [int(x) for x in parts[1:9]]
+        idle = nums[3] + nums[4]
+        total = sum(nums)
+        if _CPU_PREV_TOTAL is None or _CPU_PREV_IDLE is None:
+            _CPU_PREV_TOTAL = total
+            _CPU_PREV_IDLE = idle
+            return 0.0
+        d_total = max(total - _CPU_PREV_TOTAL, 1)
+        d_idle = max(idle - _CPU_PREV_IDLE, 0)
+        _CPU_PREV_TOTAL = total
+        _CPU_PREV_IDLE = idle
+        usage = (1.0 - (d_idle / d_total)) * 100.0
+        return round(max(0.0, min(usage, 100.0)), 1)
+    except Exception:
+        return 0.0
+
+
+def get_server_runtime_metrics() -> dict[str, Any]:
+    cpu_pct = _cpu_usage_percent()
+    meminfo = _read_proc_meminfo()
+    mem_total_kb = int(meminfo.get("MemTotal", 0))
+    mem_avail_kb = int(meminfo.get("MemAvailable", 0))
+    mem_used_kb = max(mem_total_kb - mem_avail_kb, 0)
+    mem_pct = (float(mem_used_kb) / float(mem_total_kb) * 100.0) if mem_total_kb > 0 else 0.0
+    disk = shutil.disk_usage("/")
+    disk_pct = (float(disk.used) / float(disk.total) * 100.0) if disk.total > 0 else 0.0
+    try:
+        la1, la5, la15 = os.getloadavg()
+    except Exception:
+        la1, la5, la15 = 0.0, 0.0, 0.0
+    uptime_h = 0.0
+    try:
+        uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8", errors="ignore").split()[0])
+        uptime_h = uptime_s / 3600.0
+    except Exception:
+        pass
+    return {
+        "cpu_percent": cpu_pct,
+        "mem_percent": round(mem_pct, 1),
+        "mem_used": human_bytes(mem_used_kb * 1024),
+        "mem_total": human_bytes(mem_total_kb * 1024),
+        "disk_percent": round(disk_pct, 1),
+        "disk_used": human_bytes(int(disk.used)),
+        "disk_total": human_bytes(int(disk.total)),
+        "load1": round(float(la1), 2),
+        "load5": round(float(la5), 2),
+        "load15": round(float(la15), 2),
+        "uptime_hours": round(uptime_h, 1),
+    }
+
+
+def load_pending_requests(conn: sqlite3.Connection, limit: int = PENDING_PREVIEW_LIMIT) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT chat_id, username, first_name, last_name, created_at
+        FROM users
+        WHERE role='pending'
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        out.append(
+            {
+                "chat_id": str(r["chat_id"]),
+                "username": r["username"] or "",
+                "full_name": " ".join(x for x in [r["first_name"], r["last_name"]] if x) or "",
+                "requested_at": iso_to_local_str(r["created_at"]),
+            }
+        )
+    return out
+
+
 def is_auth(request: Request) -> bool:
     return bool(request.session.get("auth_user"))
 
@@ -627,6 +741,54 @@ def get_latest_samples(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
         """
     ).fetchall()
     return {r["peer_pub"]: r for r in rows}
+
+
+def get_latest_prev_samples(conn: sqlite3.Connection) -> dict[str, tuple[sqlite3.Row, sqlite3.Row | None]]:
+    rows = conn.execute(
+        """
+        SELECT peer_pub, endpoint, latest_handshake, rx, tx, ts, id
+        FROM (
+            SELECT s.*,
+                   ROW_NUMBER() OVER(PARTITION BY s.peer_pub ORDER BY s.id DESC) AS rn
+            FROM wg_peer_samples s
+        ) z
+        WHERE z.rn <= 2
+        ORDER BY peer_pub, id DESC
+        """
+    ).fetchall()
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        grouped.setdefault(r["peer_pub"], []).append(r)
+    out: dict[str, tuple[sqlite3.Row, sqlite3.Row | None]] = {}
+    for peer_pub, items in grouped.items():
+        latest = items[0]
+        prev = items[1] if len(items) > 1 else None
+        out[peer_pub] = (latest, prev)
+    return out
+
+
+def peer_rates_mbps(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
+    out: dict[str, tuple[float, float]] = {}
+    by_peer = get_latest_prev_samples(conn)
+    for peer_pub, pair in by_peer.items():
+        latest, prev = pair
+        if not prev:
+            out[peer_pub] = (0.0, 0.0)
+            continue
+        try:
+            t1 = parse_iso(prev["ts"])
+            t2 = parse_iso(latest["ts"])
+            dt = max((t2 - t1).total_seconds(), 1.0)
+            d_rx = int(latest["rx"]) - int(prev["rx"])
+            d_tx = int(latest["tx"]) - int(prev["tx"])
+            if d_rx < 0:
+                d_rx = int(latest["rx"])
+            if d_tx < 0:
+                d_tx = int(latest["tx"])
+            out[peer_pub] = ((d_rx * 8.0) / dt / 1_000_000, (d_tx * 8.0) / dt / 1_000_000)
+        except Exception:
+            out[peer_pub] = (0.0, 0.0)
+    return out
 
 
 def handshake_count(conn: sqlite3.Connection, peer_pub: str, hours: int) -> int:
@@ -656,13 +818,32 @@ def traffic_delta(conn: sqlite3.Connection, peer_pub: str, hours: int) -> tuple[
 
 
 def parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    raw = (ts or "").strip()
+    if not raw:
+        raise ValueError("empty timestamp")
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        pass
+    # Legacy/localized format, e.g. "2026-03-14 01:20:55 MSK".
+    parts = raw.split()
+    if len(parts) >= 2:
+        base = " ".join(parts[:2])
+        try:
+            dt = datetime.strptime(base, "%Y-%m-%d %H:%M:%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+    raise ValueError(f"Invalid isoformat string: {raw!r}")
 
 
 def make_labels(start: datetime, bucket_seconds: int, count: int) -> list[str]:
     labels: list[str] = []
     for i in range(count):
-        dt = start + timedelta(seconds=i * bucket_seconds)
+        dt = (start + timedelta(seconds=i * bucket_seconds)).astimezone()
         if bucket_seconds <= 3600:
             labels.append(dt.strftime("%H:%M"))
         elif bucket_seconds <= 6 * 3600:
@@ -794,8 +975,16 @@ def top_destinations_for_owner(conn: sqlite3.Connection, owner_chat_id: str, hou
     return [f"{r['label']} ({r['n']})" for r in rows]
 
 
-def load_dashboard() -> list[dict[str, Any]]:
+def load_dashboard_data(
+    q: str = "",
+    role: str = "",
+    has_configs: str = "",
+    activity: str = "",
+    seen: str = "",
+) -> dict[str, Any]:
     with db_conn() as conn:
+        region_rows = conn.execute("SELECT code, COALESCE(NULLIF(label, ''), code) AS label FROM uplink_regions ORDER BY code").fetchall()
+        region_label_map = {str(r["code"]): str(r["label"] or r["code"]) for r in region_rows}
         users = conn.execute(
             "SELECT chat_id, role, username, first_name, last_name, created_at, last_seen, max_clients FROM users ORDER BY created_at"
         ).fetchall()
@@ -811,24 +1000,56 @@ def load_dashboard() -> list[dict[str, Any]]:
         for c in clients:
             by_owner.setdefault(c["owner_chat_id"], []).append(c)
         latest = get_latest_samples(conn)
+        rates = peer_rates_mbps(conn)
 
         out: list[dict[str, Any]] = []
+        role_counter: Counter[str] = Counter()
+        # Include regions even with zero configs so newly added regions are visible immediately.
+        region_counter: Counter[str] = Counter({str(v): 0 for v in region_label_map.values()})
+        total_handshakes_24h = 0
+        total_handshakes_7d = 0
+        total_rx_bytes = 0
+        total_tx_bytes = 0
+        total_rx_rate_mbps = 0.0
+        total_tx_rate_mbps = 0.0
+        active_users_24h = 0
+
         for u in users:
             chat_id = u["chat_id"]
             rows = by_owner.get(chat_id, [])
             total_rx, total_tx, h24, h7d, last_hs, active24 = 0, 0, 0, 0, 0, 0
-            cfg_regions = [f"{c['name']} -> {c['region_label']}" for c in rows]
+            rx_rate_user = 0.0
+            tx_rate_user = 0.0
+            cfg_regions = [
+                f"{c['name']} -> {region_label_map.get(str(c['region'] or ''), str(c['region_label'] or c['region'] or '-'))}"
+                for c in rows
+            ]
+            for c in rows:
+                label = region_label_map.get(str(c["region"] or ""), str(c["region_label"] or c["region"] or "-"))
+                region_counter[label] += 1
             for c in rows:
                 sample = latest.get(c["pub"])
                 if sample:
                     total_rx += int(sample["rx"])
                     total_tx += int(sample["tx"])
                     last_hs = max(last_hs, int(sample["latest_handshake"]))
+                rx_rate_peer, tx_rate_peer = rates.get(c["pub"], (0.0, 0.0))
+                rx_rate_user += rx_rate_peer
+                tx_rate_user += tx_rate_peer
                 h24_peer = handshake_count(conn, c["pub"], 24)
                 h24 += h24_peer
                 h7d += handshake_count(conn, c["pub"], 24 * 7)
                 if h24_peer > 0:
                     active24 += 1
+            role_counter[str(u["role"] or "unknown")] += 1
+            total_handshakes_24h += h24
+            total_handshakes_7d += h7d
+            total_rx_bytes += total_rx
+            total_tx_bytes += total_tx
+            total_rx_rate_mbps += rx_rate_user
+            total_tx_rate_mbps += tx_rate_user
+            if active24 > 0:
+                active_users_24h += 1
             out.append(
                 {
                     "chat_id": chat_id,
@@ -841,13 +1062,101 @@ def load_dashboard() -> list[dict[str, Any]]:
                     "handshakes_7d": h7d,
                     "total_rx": human_bytes(total_rx),
                     "total_tx": human_bytes(total_tx),
+                    "total_rx_bytes": total_rx,
+                    "total_tx_bytes": total_tx,
+                    "rx_rate_mbps": round(rx_rate_user, 2),
+                    "tx_rate_mbps": round(tx_rate_user, 2),
                     "last_handshake": epoch_to_iso(last_hs) if last_hs > 0 else "-",
-                    "last_seen": u["last_seen"] or "-",
+                    "last_seen": iso_to_local_str(u["last_seen"]),
+                    "last_seen_raw": u["last_seen"] or "",
                     "top_destinations": ", ".join(top_destinations_for_owner(conn, chat_id, 24, 3)) or "-",
                     "configs_regions": " | ".join(cfg_regions) if cfg_regions else "-",
                 }
             )
-        return out
+        q_l = (q or "").strip().lower()
+        role_f = (role or "").strip().lower()
+        has_configs_f = (has_configs or "").strip().lower()
+        activity_f = (activity or "").strip().lower()
+        seen_f = (seen or "").strip().lower()
+        now_utc = datetime.now(timezone.utc)
+        def match_seen(last_seen_raw: str) -> bool:
+            if seen_f in ("", "all"):
+                return True
+            if last_seen_raw in ("", "-"):
+                return seen_f == "never"
+            try:
+                dt = parse_iso(last_seen_raw)
+            except Exception:
+                return seen_f == "never"
+            age = now_utc - dt
+            if seen_f == "24h":
+                return age <= timedelta(hours=24)
+            if seen_f == "7d":
+                return age <= timedelta(days=7)
+            if seen_f == "30d":
+                return age <= timedelta(days=30)
+            if seen_f == "never":
+                return False
+            return True
+
+        filtered: list[dict[str, Any]] = []
+        for u in out:
+            if role_f and u["role"] != role_f:
+                continue
+            if has_configs_f == "yes" and int(u["clients_count"]) <= 0:
+                continue
+            if has_configs_f == "no" and int(u["clients_count"]) > 0:
+                continue
+            if activity_f == "active24" and int(u["active_configs_24h"]) <= 0:
+                continue
+            if activity_f == "inactive24" and int(u["active_configs_24h"]) > 0:
+                continue
+            if not match_seen(u["last_seen_raw"]):
+                continue
+            if q_l:
+                hay = " ".join(
+                    [
+                        str(u["chat_id"]),
+                        str(u["role"]),
+                        str(u["username"]),
+                        str(u["full_name"]),
+                        str(u["top_destinations"]),
+                        str(u["configs_regions"]),
+                    ]
+                ).lower()
+                if q_l not in hay:
+                    continue
+            filtered.append(u)
+
+        roles_chart = [{"label": k, "value": int(v)} for k, v in sorted(role_counter.items(), key=lambda x: x[0])]
+        regions_chart = [{"label": k, "value": int(v)} for k, v in region_counter.most_common(8)]
+        pending_requests = load_pending_requests(conn)
+        server_load = get_server_runtime_metrics()
+
+        return {
+            "users": filtered,
+            "stats": {
+                "total_users": len(out),
+                "filtered_users": len(filtered),
+                "total_configs": sum(int(x["clients_count"]) for x in out),
+                "active_users_24h": active_users_24h,
+                "pending_users": int(role_counter.get("pending", 0)),
+                "banned_users": int(role_counter.get("banned", 0)),
+                "admins_total": int(role_counter.get("super_owner", 0) + role_counter.get("admin", 0)),
+                "handshakes_24h": total_handshakes_24h,
+                "handshakes_7d": total_handshakes_7d,
+                "traffic_rx_total": human_bytes(total_rx_bytes),
+                "traffic_tx_total": human_bytes(total_tx_bytes),
+                "rx_rate_total_mbps": round(total_rx_rate_mbps, 2),
+                "tx_rate_total_mbps": round(total_tx_rate_mbps, 2),
+            },
+            "charts": {
+                "roles": roles_chart,
+                "regions": regions_chart,
+            },
+            "pending_requests": pending_requests,
+            "server_load": server_load,
+        }
 
 
 def load_user_detail(
@@ -879,6 +1188,7 @@ def load_user_detail(
             (chat_id,),
         ).fetchall()
         latest = get_latest_samples(conn)
+        rates = peer_rates_mbps(conn)
         cfg_by_pub = {c["pub"]: c["name"] for c in clients}
 
         config_rows = []
@@ -907,11 +1217,13 @@ def load_user_detail(
                     "pub": c["pub"],
                     "region": c["region"],
                     "region_label": c["region_label"],
-                    "created_at": c["created_at"],
+                    "created_at": iso_to_local_str(c["created_at"]),
                     "endpoint": sample["endpoint"] if sample else "-",
                     "latest_handshake": epoch_to_iso(int(sample["latest_handshake"])) if sample and int(sample["latest_handshake"]) > 0 else "-",
                     "rx_total": human_bytes(int(sample["rx"])) if sample else "0 B",
                     "tx_total": human_bytes(int(sample["tx"])) if sample else "0 B",
+                    "rx_rate_mbps": round(rates.get(c["pub"], (0.0, 0.0))[0], 2),
+                    "tx_rate_mbps": round(rates.get(c["pub"], (0.0, 0.0))[1], 2),
                     "rx_24h": human_bytes(rx24),
                     "tx_24h": human_bytes(tx24),
                     "rx_7d": human_bytes(rx7d),
@@ -1036,6 +1348,8 @@ def load_user_detail(
             start = (events_page - 1) * events_per_page
             end = start + events_per_page
             events_view = events[start:end]
+        for e in events_view:
+            e["event_ts"] = iso_to_local_str(e.get("event_ts"))
 
         filtered_config_rows = config_rows
         if config_name:
@@ -1055,8 +1369,8 @@ def load_user_detail(
                 "role": user["role"],
                 "username": user["username"] or "",
                 "full_name": " ".join(x for x in [user["first_name"], user["last_name"]] if x) or "",
-                "created_at": user["created_at"],
-                "last_seen": user["last_seen"] or "-",
+                "created_at": iso_to_local_str(user["created_at"]),
+                "last_seen": iso_to_local_str(user["last_seen"]),
                 "max_clients": user["max_clients"],
             },
             "configs": filtered_config_rows,
@@ -1264,6 +1578,9 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                 """,
                 (name, since_iso),
             ).fetchall()
+            event_items = [dict(e) for e in events]
+            for e in event_items:
+                e["event_ts"] = iso_to_local_str(e.get("event_ts"))
 
             interfaces.append(
                 {
@@ -1275,7 +1592,7 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                     "regions": iface_regions.get(name, []),
                     "is_ok": iface_ok,
                     "health_details": health_details,
-                    "health_updated_at": iface["health_updated_at"] or "-",
+                    "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
                     "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
                     "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
                     "rx_total": human_bytes(int(latest["rx_bytes"])) if latest else "0 B",
@@ -1287,7 +1604,7 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                     "speed_mbps": [round(x, 3) for x in speed_mbps],
                     "ping_ms_series": ping_ms_series,
                     "state_series": state_series,
-                    "events": [dict(e) for e in events],
+                    "events": event_items,
                 }
             )
 
@@ -1296,7 +1613,201 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
             "period_values": [("1h", "1 час"), ("24h", "24 часа"), ("7d", "7 дней")],
             "regions": regions,
             "interfaces": interfaces,
-            "updated_at": now_iso(),
+            "updated_at": server_time_str(),
+        }
+
+
+def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
+    with db_conn() as conn:
+        iface_rows = conn.execute(
+            """
+            SELECT i.name, i.kind, i.service_name, i.table_id, i.enabled,
+                   h.is_ok AS is_ok,
+                   h.details AS health_details,
+                   h.updated_at AS health_updated_at
+            FROM uplink_interfaces i
+            LEFT JOIN uplink_health h ON h.interface_name=i.name
+            ORDER BY i.name
+            """
+        ).fetchall()
+        if period == "1h":
+            since_dt = datetime.now(timezone.utc) - timedelta(hours=1)
+            bucket_seconds = 60
+        elif period == "7d":
+            since_dt = datetime.now(timezone.utc) - timedelta(days=7)
+            bucket_seconds = 6 * 3600
+        else:
+            since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+            bucket_seconds = 300
+            period = "24h"
+        since_iso = since_dt.isoformat().replace("+00:00", "Z")
+
+        sample_rows = conn.execute(
+            """
+            SELECT iface_name, ts, rx_bytes, tx_bytes, handshake_ts, ping_ms, state, id
+            FROM uplink_samples
+            WHERE ts>=?
+            ORDER BY iface_name, id ASC
+            """
+            ,
+            (since_iso,),
+        ).fetchall()
+        grouped: dict[str, list[sqlite3.Row]] = {}
+        for r in sample_rows:
+            grouped.setdefault(r["iface_name"], []).append(r)
+        out: list[dict[str, Any]] = []
+        for iface in iface_rows:
+            name = iface["name"]
+            rows = grouped.get(name, [])
+            latest = rows[-1] if rows else None
+            prev = rows[-2] if len(rows) > 1 else None
+            rx_rate = 0.0
+            tx_rate = 0.0
+            if latest and prev:
+                try:
+                    t1 = parse_iso(prev["ts"])
+                    t2 = parse_iso(latest["ts"])
+                    dt = max((t2 - t1).total_seconds(), 1.0)
+                    d_rx = int(latest["rx_bytes"]) - int(prev["rx_bytes"])
+                    d_tx = int(latest["tx_bytes"]) - int(prev["tx_bytes"])
+                    if d_rx < 0:
+                        d_rx = int(latest["rx_bytes"])
+                    if d_tx < 0:
+                        d_tx = int(latest["tx_bytes"])
+                    rx_rate = (d_rx * 8.0) / dt / 1_000_000
+                    tx_rate = (d_tx * 8.0) / dt / 1_000_000
+                except Exception:
+                    pass
+            iface_ok = int(iface["is_ok"]) == 1 if iface["is_ok"] is not None else bool(latest and latest["state"] == "ok")
+            if rows:
+                start = parse_iso(rows[0]["ts"])
+            else:
+                start = since_dt
+            now = datetime.now(timezone.utc)
+            total_seconds = max(int((now - start).total_seconds()), bucket_seconds)
+            bucket_count = max(min((total_seconds // bucket_seconds) + 1, 400), 1)
+            start = now - timedelta(seconds=(bucket_count - 1) * bucket_seconds)
+            labels = make_labels(start, bucket_seconds, bucket_count)
+            speed_mbps = [0.0] * bucket_count
+            ping_ms_series = [None] * bucket_count
+            state_series = [0] * bucket_count
+
+            last_rx = None
+            last_tx = None
+            last_ts = None
+            for r in rows:
+                try:
+                    dt = parse_iso(r["ts"])
+                except Exception:
+                    continue
+                idx = int((dt - start).total_seconds() // bucket_seconds)
+                if idx < 0 or idx >= bucket_count:
+                    last_rx = int(r["rx_bytes"])
+                    last_tx = int(r["tx_bytes"])
+                    last_ts = dt
+                    continue
+                state_series[idx] = 1 if r["state"] == "ok" else 0
+                if r["ping_ms"] is not None:
+                    ping_ms_series[idx] = float(r["ping_ms"])
+                if last_rx is not None and last_tx is not None and last_ts is not None:
+                    sec = max((dt - last_ts).total_seconds(), 1.0)
+                    d_rx = int(r["rx_bytes"]) - last_rx
+                    d_tx = int(r["tx_bytes"]) - last_tx
+                    if d_rx < 0:
+                        d_rx = int(r["rx_bytes"])
+                    if d_tx < 0:
+                        d_tx = int(r["tx_bytes"])
+                    speed_mbps[idx] = ((d_rx + d_tx) * 8.0 / sec) / 1_000_000
+                last_rx = int(r["rx_bytes"])
+                last_tx = int(r["tx_bytes"])
+                last_ts = dt
+            out.append(
+                {
+                    "name": name,
+                    "is_ok": iface_ok,
+                    "health_details": (iface["health_details"] or "").strip() or "-",
+                    "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
+                    "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
+                    "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
+                    "rx_total": human_bytes(int(latest["rx_bytes"])) if latest else "0 B",
+                    "tx_total": human_bytes(int(latest["tx_bytes"])) if latest else "0 B",
+                    "rx_rate_mbps": round(rx_rate, 2),
+                    "tx_rate_mbps": round(tx_rate, 2),
+                    "labels": labels,
+                    "speed_mbps": [round(x, 3) for x in speed_mbps],
+                    "ping_ms_series": ping_ms_series,
+                    "state_series": state_series,
+                }
+            )
+        return {"period": period, "updated_at": server_time_str(), "interfaces": out}
+
+
+def load_user_realtime(chat_id: str) -> dict[str, Any] | None:
+    with db_conn() as conn:
+        user = conn.execute("SELECT chat_id FROM users WHERE chat_id=?", (chat_id,)).fetchone()
+        if not user:
+            return None
+        clients = conn.execute(
+            "SELECT name, pub FROM clients WHERE owner_chat_id=? ORDER BY created_at DESC",
+            (chat_id,),
+        ).fetchall()
+        latest = get_latest_samples(conn)
+        rates = peer_rates_mbps(conn)
+        configs: list[dict[str, Any]] = []
+        for c in clients:
+            sample = latest.get(c["pub"])
+            rx_rate, tx_rate = rates.get(c["pub"], (0.0, 0.0))
+            configs.append(
+                {
+                    "pub": c["pub"],
+                    "name": c["name"],
+                    "rx_total": human_bytes(int(sample["rx"])) if sample else "0 B",
+                    "tx_total": human_bytes(int(sample["tx"])) if sample else "0 B",
+                    "latest_handshake": epoch_to_iso(int(sample["latest_handshake"])) if sample and int(sample["latest_handshake"] or 0) > 0 else "-",
+                    "rx_rate_mbps": round(rx_rate, 2),
+                    "tx_rate_mbps": round(tx_rate, 2),
+                }
+            )
+        return {"updated_at": server_time_str(), "configs": configs}
+
+
+def load_user_chart_data(chat_id: str, period: str = "24h") -> dict[str, Any] | None:
+    with db_conn() as conn:
+        user = conn.execute("SELECT chat_id FROM users WHERE chat_id=?", (chat_id,)).fetchone()
+        if not user:
+            return None
+        clients = conn.execute(
+            "SELECT name, pub FROM clients WHERE owner_chat_id=? ORDER BY created_at DESC",
+            (chat_id,),
+        ).fetchall()
+        peer_pubs = [c["pub"] for c in clients]
+        start_dt, bucket_seconds, bucket_count, period = period_params(conn, period, peer_pubs)
+        labels = make_labels(start_dt, bucket_seconds, bucket_count)
+        user_traffic = [0] * bucket_count
+        user_hs = [0] * bucket_count
+        cfg_rows: list[dict[str, Any]] = []
+        for c in clients:
+            traffic_series, handshake_series = peer_series(conn, c["pub"], start_dt, bucket_seconds, bucket_count)
+            for i in range(bucket_count):
+                user_traffic[i] += traffic_series[i]
+                user_hs[i] += handshake_series[i]
+            cfg_rows.append(
+                {
+                    "pub": c["pub"],
+                    "name": c["name"],
+                    "traffic_series_gb": [round(float(v) / (1024 ** 3), 4) for v in traffic_series],
+                    "speed_series_mbps": [round((float(v) * 8.0 / max(bucket_seconds, 1)) / 1_000_000, 2) for v in traffic_series],
+                    "handshake_series": handshake_series,
+                }
+            )
+        return {
+            "period": period,
+            "updated_at": server_time_str(),
+            "labels": labels,
+            "user_traffic_series_gb": [round(float(v) / (1024 ** 3), 2) for v in user_traffic],
+            "user_speed_series_mbps": [round((float(v) * 8.0 / max(bucket_seconds, 1)) / 1_000_000, 2) for v in user_traffic],
+            "user_handshake_series": user_hs,
+            "configs": cfg_rows,
         }
 
 
@@ -1354,16 +1865,68 @@ async def logout(request: Request):
 async def dashboard(request: Request):
     if not is_auth(request):
         return redirect_login()
+    q = (request.query_params.get("q") or "").strip()
+    role = (request.query_params.get("role") or "").strip().lower()
+    has_configs = (request.query_params.get("has_configs") or "").strip().lower()
+    activity = (request.query_params.get("activity") or "").strip().lower()
+    seen = (request.query_params.get("seen") or "").strip().lower()
+    dashboard_data = load_dashboard_data(q=q, role=role, has_configs=has_configs, activity=activity, seen=seen)
     return TEMPLATES.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "users": load_dashboard(),
+            "users": dashboard_data["users"],
+            "stats": dashboard_data["stats"],
+            "charts": dashboard_data["charts"],
+            "pending_requests": dashboard_data.get("pending_requests", []),
+            "server_load": dashboard_data.get("server_load", {}),
+            "filters": {
+                "q": q,
+                "role": role,
+                "has_configs": has_configs,
+                "activity": activity,
+                "seen": seen,
+            },
             "auth_user": request.session.get("auth_user", ""),
-            "updated_at": now_iso(),
+            "updated_at": server_time_str(),
             "server_time": server_time_str(),
         },
     )
+
+
+@app.get("/api/realtime/dashboard")
+async def api_realtime_dashboard(request: Request):
+    if not is_auth(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    q = (request.query_params.get("q") or "").strip()
+    role = (request.query_params.get("role") or "").strip().lower()
+    has_configs = (request.query_params.get("has_configs") or "").strip().lower()
+    activity = (request.query_params.get("activity") or "").strip().lower()
+    seen = (request.query_params.get("seen") or "").strip().lower()
+    only_chat_ids_raw = (request.query_params.get("chat_ids") or "").strip()
+    only_chat_ids = {x.strip() for x in only_chat_ids_raw.split(",") if x.strip()} if only_chat_ids_raw else set()
+    data = load_dashboard_data(q=q, role=role, has_configs=has_configs, activity=activity, seen=seen)
+    users = data["users"]
+    if only_chat_ids:
+        users = [u for u in users if str(u["chat_id"]) in only_chat_ids]
+    users_map = {
+        str(u["chat_id"]): {
+            "total_rx": u["total_rx"],
+            "total_tx": u["total_tx"],
+            "rx_rate_mbps": u["rx_rate_mbps"],
+            "tx_rate_mbps": u["tx_rate_mbps"],
+            "last_handshake": u["last_handshake"],
+        }
+        for u in users
+    }
+    return {
+        "updated_at": server_time_str(),
+        "stats": data["stats"],
+        "charts": data["charts"],
+        "users": users_map,
+        "pending_requests": data.get("pending_requests", []),
+        "server_load": data.get("server_load", {}),
+    }
 
 
 @app.get("/servers", response_class=HTMLResponse)
@@ -1381,6 +1944,14 @@ async def servers(request: Request):
             "server_time": server_time_str(),
         },
     )
+
+
+@app.get("/api/realtime/servers")
+async def api_realtime_servers(request: Request):
+    if not is_auth(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    period = (request.query_params.get("period") or "24h").strip()
+    return load_servers_realtime(period=period)
 
 
 @app.get("/user/{chat_id}", response_class=HTMLResponse)
@@ -1413,6 +1984,27 @@ async def user_detail(request: Request, chat_id: str):
         "user.html",
         {"request": request, "data": data, "auth_user": request.session.get("auth_user", ""), "server_time": server_time_str()},
     )
+
+
+@app.get("/api/realtime/user/{chat_id}")
+async def api_realtime_user(request: Request, chat_id: str):
+    if not is_auth(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    data = load_user_realtime(chat_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    return data
+
+
+@app.get("/api/realtime/user/{chat_id}/charts")
+async def api_realtime_user_charts(request: Request, chat_id: str):
+    if not is_auth(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    period = (request.query_params.get("period") or "24h").strip()
+    data = load_user_chart_data(chat_id, period=period)
+    if not data:
+        raise HTTPException(status_code=404, detail="user_not_found")
+    return data
 
 
 @app.get("/user/{chat_id}/chat")

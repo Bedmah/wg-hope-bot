@@ -1,6 +1,14 @@
-﻿.venv/
+.venv/
 __pycache__/
 .env
 clients/
 *.pyc
 chat/*.log
+backups/
+chat/
+*.bak
+*.bak.*
+data.sqlite
+wg-bot.db
+*.db-shm
+*.db-wal

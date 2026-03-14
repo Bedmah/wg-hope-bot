@@ -31,7 +31,7 @@
   <div class="top">
     <div>
       <strong>Серверы и регионы</strong>
-      <span class="muted">Обновлено: {{ data.updated_at }}</span>
+      <span class="muted">Обновлено: <span id="rt-updated-at">{{ data.updated_at }}</span></span>
     </div>
     <div class="links">
       <span class="muted">Время сервера: {{ server_time }}</span>
@@ -92,13 +92,13 @@
     <h3>Интерфейсы</h3>
     <div class="cards">
       {% for i in data.interfaces %}
-      <div class="card">
+      <div class="card" data-iface-name="{{ i.name }}">
         <div>
           <strong>{{ i.name }}</strong>
           {% if i.is_ok %}
-          <span class="ok">OK</span>
+          <span class="ok rt-state">OK</span>
           {% else %}
-          <span class="down">DOWN</span>
+          <span class="down rt-state">DOWN</span>
           {% endif %}
         </div>
         <div class="muted">{{ i.kind }} | service={{ i.service_name }} | table={{ i.table_id }} | enabled={{ i.enabled }}</div>
@@ -107,12 +107,12 @@
           <span class="pill">{{ code }}</span>
           {% endfor %}
         </div>
-        <div style="margin-top:8px;">Handshake: <strong>{{ i.latest_handshake }}</strong></div>
-        <div>Ping: <strong>{{ i.latest_ping_ms }}</strong> мс</div>
-        <div>RX/TX всего: <strong>{{ i.rx_total }}</strong> / <strong>{{ i.tx_total }}</strong></div>
-        <div>Скорость RX/TX: <strong>{{ i.rx_rate_mbps }}</strong> / <strong>{{ i.tx_rate_mbps }}</strong> Мбит/с</div>
+        <div style="margin-top:8px;">Handshake: <strong class="rt-last-hs">{{ i.latest_handshake }}</strong></div>
+        <div>Ping: <strong class="rt-ping">{{ i.latest_ping_ms }}</strong> мс</div>
+        <div>RX/TX всего: <strong class="rt-rx">{{ i.rx_total }}</strong> / <strong class="rt-tx">{{ i.tx_total }}</strong></div>
+        <div>Скорость RX/TX: <strong class="rt-rx-rate">{{ i.rx_rate_mbps }}</strong> / <strong class="rt-tx-rate">{{ i.tx_rate_mbps }}</strong> Мбит/с</div>
         <div>Uptime: <strong>{{ i.uptime_pct }}%</strong></div>
-        <div class="muted">Проверка: {{ i.health_updated_at }} | {{ i.health_details }}</div>
+        <div class="muted">Проверка: <span class="rt-health-updated">{{ i.health_updated_at }}</span> | <span class="rt-health-details">{{ i.health_details }}</span></div>
 
         <div class="chart-wrap">
           <canvas id="ifaceChart{{ loop.index }}" width="640" height="240"></canvas>
@@ -138,14 +138,27 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <script>
     const interfaces = {{ data.interfaces | tojson }};
+    const rtPeriod = {{ data.period | tojson }};
     const ru = (v) => Number(v).toFixed(2).replace('.', ',');
-    interfaces.forEach((item, idx) => {
-      const node = document.getElementById('ifaceChart' + (idx + 1));
+    const chartsByIface = {};
+
+    function renderIfaceChart(item, idx) {
+      const canvasId = 'ifaceChart' + (idx + 1);
+      const node = document.getElementById(canvasId);
       if (!node) return;
       const speed = (item.speed_mbps || []).map(v => +Number(v || 0).toFixed(3));
       const ping = (item.ping_ms_series || []).map(v => v === null ? null : +Number(v).toFixed(2));
       const state = (item.state_series || []).map(v => Number(v) ? 1 : 0);
-      new Chart(node, {
+      const existing = chartsByIface[item.name];
+      if (existing) {
+        existing.data.labels = item.labels || [];
+        existing.data.datasets[0].data = speed;
+        existing.data.datasets[1].data = ping;
+        existing.data.datasets[2].data = state;
+        existing.update("none");
+        return;
+      }
+      chartsByIface[item.name] = new Chart(node, {
         data: {
           labels: item.labels || [],
           datasets: [
@@ -167,7 +180,48 @@
           }
         }
       });
-    });
+    }
+    interfaces.forEach((item, idx) => renderIfaceChart(item, idx));
+
+    async function pollRealtimeServers() {
+      try {
+        const res = await fetch('/api/realtime/servers?period=' + encodeURIComponent(rtPeriod), { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const updated = document.getElementById('rt-updated-at');
+        if (updated && data.updated_at) updated.textContent = data.updated_at;
+        const byIface = {};
+        (data.interfaces || []).forEach((i) => { byIface[i.name] = i; });
+        (data.interfaces || []).forEach((item, idx) => renderIfaceChart(item, idx));
+        document.querySelectorAll('[data-iface-name]').forEach((card) => {
+          const item = byIface[card.dataset.ifaceName];
+          if (!item) return;
+          const st = card.querySelector('.rt-state');
+          const hs = card.querySelector('.rt-last-hs');
+          const ping = card.querySelector('.rt-ping');
+          const rx = card.querySelector('.rt-rx');
+          const tx = card.querySelector('.rt-tx');
+          const rxr = card.querySelector('.rt-rx-rate');
+          const txr = card.querySelector('.rt-tx-rate');
+          const hu = card.querySelector('.rt-health-updated');
+          const hd = card.querySelector('.rt-health-details');
+          if (st) {
+            st.textContent = item.is_ok ? 'OK' : 'DOWN';
+            st.classList.toggle('ok', !!item.is_ok);
+            st.classList.toggle('down', !item.is_ok);
+          }
+          if (hs) hs.textContent = item.latest_handshake ?? '-';
+          if (ping) ping.textContent = item.latest_ping_ms ?? '-';
+          if (rx) rx.textContent = item.rx_total ?? '-';
+          if (tx) tx.textContent = item.tx_total ?? '-';
+          if (rxr) rxr.textContent = item.rx_rate_mbps ?? 0;
+          if (txr) txr.textContent = item.tx_rate_mbps ?? 0;
+          if (hu) hu.textContent = item.health_updated_at ?? '-';
+          if (hd) hd.textContent = item.health_details ?? '-';
+        });
+      } catch (e) {}
+    }
+    setInterval(pollRealtimeServers, 5000);
   </script>
 </body>
 </html>
