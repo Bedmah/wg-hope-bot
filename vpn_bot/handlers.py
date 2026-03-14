@@ -4,6 +4,7 @@ import asyncio
 import ipaddress
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from telegram import Update
@@ -222,7 +223,16 @@ def parse_chat_ids(raw: str) -> list[str]:
 def banned_status_text(chat_id: str) -> str:
     row = db.get_block_reason(chat_id)
     reason = row["reason"] if row and row["reason"] else "Не указана"
-    blocked_at = row["blocked_at"] if row and row["blocked_at"] else "-"
+    blocked_at_raw = row["blocked_at"] if row and row["blocked_at"] else "-"
+    blocked_at = blocked_at_raw
+    if blocked_at_raw and blocked_at_raw != "-":
+        try:
+            dt = datetime.fromisoformat(str(blocked_at_raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            blocked_at = dt.astimezone().strftime("%d-%m-%Y %H:%M:%S")
+        except Exception:
+            blocked_at = str(blocked_at_raw)
     return (
         "Статус: доступ заблокирован.\n"
         f"Причина: {reason}\n"
