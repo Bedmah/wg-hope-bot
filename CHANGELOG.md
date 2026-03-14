@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.3.1
+
+- Hotfix метрик веб-мониторинга после reboot:
+  - исправлен сброс `RX/TX всего` на главной и на страницах пользователей;
+  - исправлен сброс `RX/TX всего` во вкладке `Серверы`.
+- Добавлено персистентное хранение totals для peer-метрик:
+  - новая таблица `wg_peer_totals` в monitor БД;
+  - инкрементальное накопление totals в `collect_once()` с корректной обработкой reset счётчиков;
+  - one-time backfill totals из исторических `wg_peer_samples` на существующих установках.
+- Добавлено персистентное хранение totals для uplink-метрик:
+  - новая таблица `uplink_totals` в monitor БД;
+  - инкрементальное накопление totals в `collect_uplink_once()` с корректной обработкой reset счётчиков;
+  - one-time backfill totals из `uplink_samples` на существующих установках.
+- Обновлены источники данных в веб-мониторинге:
+  - `load_dashboard_data()` и `load_user_realtime()` теперь используют `wg_peer_totals` для `RX/TX всего`;
+  - `load_servers_data()` и `load_servers_realtime()` теперь используют `uplink_totals` для `RX/TX всего`.
+- Практический эффект:
+  - обнуление kernel/WireGuard счётчиков после reboot больше не обнуляет `RX/TX всего` в UI.
+
 ## v1.3.0
 
 - Добавлена post-reboot автопроверка состояния сервера и VPN-контура:
