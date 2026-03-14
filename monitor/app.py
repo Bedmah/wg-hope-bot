@@ -225,6 +225,18 @@ def init_monitor_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_uplink_events_iface_ts ON uplink_events(iface_name, event_ts)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_totals(
+                iface_name TEXT PRIMARY KEY,
+                updated_ts TEXT NOT NULL,
+                last_raw_rx INTEGER NOT NULL,
+                last_raw_tx INTEGER NOT NULL,
+                total_rx INTEGER NOT NULL,
+                total_tx INTEGER NOT NULL
+            )
+            """
+        )
 
         auth = conn.execute("SELECT id FROM monitor_auth WHERE id=1").fetchone()
         if not auth:
@@ -279,6 +291,53 @@ def init_monitor_db() -> None:
                       total_tx=excluded.total_tx
                     """,
                     (peer_pub, last_ts, int(prev_rx), int(prev_tx), int(total_rx), int(total_tx)),
+                )
+        uplink_total_rows = conn.execute("SELECT COUNT(1) AS n FROM uplink_totals").fetchone()
+        if int(uplink_total_rows["n"] or 0) == 0:
+            ifaces = conn.execute("SELECT DISTINCT iface_name FROM uplink_samples").fetchall()
+            for row in ifaces:
+                iface_name = str(row["iface_name"])
+                samples = conn.execute(
+                    "SELECT ts, rx_bytes, tx_bytes FROM uplink_samples WHERE iface_name=? ORDER BY id ASC",
+                    (iface_name,),
+                ).fetchall()
+                prev_rx = None
+                prev_tx = None
+                total_rx = 0
+                total_tx = 0
+                last_ts = now_iso()
+                for s in samples:
+                    rx = int(s["rx_bytes"])
+                    tx = int(s["tx_bytes"])
+                    if prev_rx is None or prev_tx is None:
+                        total_rx += max(rx, 0)
+                        total_tx += max(tx, 0)
+                    else:
+                        d_rx = rx - prev_rx
+                        d_tx = tx - prev_tx
+                        if d_rx < 0:
+                            d_rx = rx
+                        if d_tx < 0:
+                            d_tx = tx
+                        total_rx += max(d_rx, 0)
+                        total_tx += max(d_tx, 0)
+                    prev_rx = rx
+                    prev_tx = tx
+                    last_ts = s["ts"] or last_ts
+                if prev_rx is None or prev_tx is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO uplink_totals(iface_name, updated_ts, last_raw_rx, last_raw_tx, total_rx, total_tx)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(iface_name) DO UPDATE SET
+                      updated_ts=excluded.updated_ts,
+                      last_raw_rx=excluded.last_raw_rx,
+                      last_raw_tx=excluded.last_raw_tx,
+                      total_rx=excluded.total_rx,
+                      total_tx=excluded.total_tx
+                    """,
+                    (iface_name, last_ts, int(prev_rx), int(prev_tx), int(total_rx), int(total_tx)),
                 )
         conn.commit()
 
@@ -464,6 +523,35 @@ def collect_uplink_once(conn: sqlite3.Connection, ts: str) -> None:
                 int(rx),
                 int(tx),
             ),
+        )
+        prev_total = conn.execute(
+            "SELECT last_raw_rx, last_raw_tx, total_rx, total_tx FROM uplink_totals WHERE iface_name=?",
+            (name,),
+        ).fetchone()
+        if prev_total:
+            d_rx = int(rx) - int(prev_total["last_raw_rx"])
+            d_tx = int(tx) - int(prev_total["last_raw_tx"])
+            if d_rx < 0:
+                d_rx = int(rx)
+            if d_tx < 0:
+                d_tx = int(tx)
+            total_rx = int(prev_total["total_rx"]) + max(d_rx, 0)
+            total_tx = int(prev_total["total_tx"]) + max(d_tx, 0)
+        else:
+            total_rx = max(int(rx), 0)
+            total_tx = max(int(tx), 0)
+        conn.execute(
+            """
+            INSERT INTO uplink_totals(iface_name, updated_ts, last_raw_rx, last_raw_tx, total_rx, total_tx)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(iface_name) DO UPDATE SET
+              updated_ts=excluded.updated_ts,
+              last_raw_rx=excluded.last_raw_rx,
+              last_raw_tx=excluded.last_raw_tx,
+              total_rx=excluded.total_rx,
+              total_tx=excluded.total_tx
+            """,
+            (name, ts, int(rx), int(tx), int(total_rx), int(total_tx)),
         )
 
         prev = conn.execute(
@@ -858,6 +946,11 @@ def get_latest_prev_samples(conn: sqlite3.Connection) -> dict[str, tuple[sqlite3
 def peer_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
     rows = conn.execute("SELECT peer_pub, total_rx, total_tx FROM wg_peer_totals").fetchall()
     return {str(r["peer_pub"]): (int(r["total_rx"]), int(r["total_tx"])) for r in rows}
+
+
+def uplink_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    rows = conn.execute("SELECT iface_name, total_rx, total_tx FROM uplink_totals").fetchall()
+    return {str(r["iface_name"]): (int(r["total_rx"]), int(r["total_tx"])) for r in rows}
 
 
 def peer_rates_mbps(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
@@ -1567,6 +1660,7 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
             """
         ).fetchall()
         iface_regions = interface_regions_map(conn)
+        totals = uplink_total_bytes(conn)
 
         if period == "1h":
             since_dt = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -1590,6 +1684,7 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
         for iface in iface_rows:
             name = iface["name"]
             rows = by_iface.get(name, [])
+            total_pair = totals.get(name)
             latest = rows[-1] if rows else None
             prev = rows[-2] if len(rows) >= 2 else None
             if iface["is_ok"] is None:
@@ -1696,8 +1791,8 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                     "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
                     "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
                     "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
-                    "rx_total": human_bytes(int(latest["rx_bytes"])) if latest else "0 B",
-                    "tx_total": human_bytes(int(latest["tx_bytes"])) if latest else "0 B",
+                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(latest["rx_bytes"])) if latest else "0 B"),
+                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(latest["tx_bytes"])) if latest else "0 B"),
                     "rx_rate_mbps": round(rx_rate / 1_000_000, 2),
                     "tx_rate_mbps": round(tx_rate / 1_000_000, 2),
                     "uptime_pct": round(uptime_pct, 2),
@@ -1753,6 +1848,7 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
             ,
             (since_iso,),
         ).fetchall()
+        totals = uplink_total_bytes(conn)
         grouped: dict[str, list[sqlite3.Row]] = {}
         for r in sample_rows:
             grouped.setdefault(r["iface_name"], []).append(r)
@@ -1760,6 +1856,7 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
         for iface in iface_rows:
             name = iface["name"]
             rows = grouped.get(name, [])
+            total_pair = totals.get(name)
             latest = rows[-1] if rows else None
             prev = rows[-2] if len(rows) > 1 else None
             rx_rate = 0.0
@@ -1830,8 +1927,8 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
                     "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
                     "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
                     "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
-                    "rx_total": human_bytes(int(latest["rx_bytes"])) if latest else "0 B",
-                    "tx_total": human_bytes(int(latest["tx_bytes"])) if latest else "0 B",
+                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(latest["rx_bytes"])) if latest else "0 B"),
+                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(latest["tx_bytes"])) if latest else "0 B"),
                     "rx_rate_mbps": round(rx_rate, 2),
                     "tx_rate_mbps": round(tx_rate, 2),
                     "labels": labels,
