@@ -637,6 +637,60 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
+    # Resilient broadcast flow: handle broadcast buttons even if admin_mode was lost.
+    # This protects UX when bot process was restarted or context storage was reset.
+    if is_adminish(role) and text in (
+        BUTTON_B_PENDING,
+        BUTTON_B_APPROVED,
+        BUTTON_B_BANNED,
+        BUTTON_B_ALL,
+        BUTTON_B_ADD_IDS,
+        BUTTON_B_NEXT,
+    ):
+        context.user_data["ui_menu"] = "admin_main"
+        if text in (BUTTON_B_PENDING, BUTTON_B_APPROVED, BUTTON_B_BANNED, BUTTON_B_ALL):
+            selected_group = {
+                BUTTON_B_PENDING: "pending",
+                BUTTON_B_APPROVED: "approved",
+                BUTTON_B_BANNED: "banned",
+                BUTTON_B_ALL: "all",
+            }[text]
+            targets = broadcast_targets_by_group(selected_group)
+            context.user_data["broadcast_targets"] = targets
+            context.user_data["admin_mode"] = "broadcast_confirm"
+            await say(
+                context,
+                chat_id,
+                f"Группа выбрана. Получателей: {len(targets)}.\n"
+                "Можно добавить chat_id вручную или сразу перейти к тексту.",
+                admin_broadcast_confirm_menu(),
+            )
+            return
+        if text == BUTTON_B_ADD_IDS:
+            context.user_data.setdefault("broadcast_targets", [])
+            context.user_data["admin_mode"] = "broadcast_add_ids"
+            await say(
+                context,
+                chat_id,
+                "Введи chat_id через пробел/запятую. Можно несколько значений за раз.",
+                cancel_menu(),
+            )
+            return
+        if text == BUTTON_B_NEXT:
+            targets = context.user_data.get("broadcast_targets", [])
+            if not targets:
+                context.user_data["admin_mode"] = "broadcast_pick"
+                await say(context, chat_id, "Список получателей пуст. Выбери группу или добавь chat_id.", admin_broadcast_menu())
+                return
+            context.user_data["admin_mode"] = "broadcast_text"
+            await say(
+                context,
+                chat_id,
+                f"Введи текст рассылки. Получателей: {len(targets)}. Для отмены: 'Назад'.",
+                cancel_menu(),
+            )
+            return
+
     if is_adminish(role) and text == BUTTON_A_LIMITS:
         context.user_data["ui_menu"] = "admin_main"
         context.user_data["admin_mode"] = "limit_target"
