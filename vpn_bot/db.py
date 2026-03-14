@@ -146,6 +146,17 @@ def init() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_blocks(
+                chat_id TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                actor_chat_id TEXT,
+                blocked_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
 
         cur.execute(
             """
@@ -378,7 +389,36 @@ def set_role(chat_id: str, new_role: str) -> None:
                 """,
                 (chat_id, new_role, ts, ts, limit, ts),
             )
+        if new_role != "banned":
+            cur.execute("DELETE FROM user_blocks WHERE chat_id=?", (chat_id,))
         conn.commit()
+
+
+def set_block_reason(chat_id: str, reason: str, actor_chat_id: str | None = None) -> None:
+    text = (reason or "").strip() or "Не указана"
+    ts = now_iso()
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO user_blocks(chat_id, reason, actor_chat_id, blocked_at, updated_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+              reason=excluded.reason,
+              actor_chat_id=excluded.actor_chat_id,
+              blocked_at=excluded.blocked_at,
+              updated_at=excluded.updated_at
+            """,
+            (chat_id, text, actor_chat_id, ts, ts),
+        )
+        conn.commit()
+
+
+def get_block_reason(chat_id: str) -> sqlite3.Row | None:
+    with _db() as conn:
+        return conn.execute(
+            "SELECT chat_id, reason, actor_chat_id, blocked_at, updated_at FROM user_blocks WHERE chat_id=?",
+            (chat_id,),
+        ).fetchone()
 
 
 def get_limit(chat_id: str) -> int:

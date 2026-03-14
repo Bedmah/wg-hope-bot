@@ -42,6 +42,7 @@ BUTTON_L_POSTBOOT_TEST = "Ручной тест"
 
 BUTTON_P_STATUS = "Проверить статус"
 BUTTON_P_SUPPORT = "Доступ / Вопросы"
+BUTTON_B_STATUS = "Статус"
 
 BUTTON_C_VIEW = "Показать тексты"
 BUTTON_C_GUIDE = "Изменить инструкцию"
@@ -118,6 +119,15 @@ def pending_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [BUTTON_P_STATUS, BUTTON_P_SUPPORT],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def banned_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [BUTTON_B_STATUS, BUTTON_SUPPORT],
         ],
         resize_keyboard=True,
     )

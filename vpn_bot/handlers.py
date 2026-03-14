@@ -52,6 +52,7 @@ from .keyboards import (
     admin_broadcast_confirm_menu,
     cancel_menu,
     pending_menu,
+    banned_menu,
     clients_kb,
     admin_user_clients_kb,
     region_clients_kb,
@@ -93,6 +94,7 @@ from .keyboards import (
     BUTTON_L_POSTBOOT_TEST,
     BUTTON_P_STATUS,
     BUTTON_P_SUPPORT,
+    BUTTON_B_STATUS,
     BUTTON_C_VIEW,
     BUTTON_C_GUIDE,
     BUTTON_C_REGIONS,
@@ -136,6 +138,10 @@ def sync_user_profile(update: Update) -> str:
 
 
 def main_menu_for(role: str | None):
+    if role == "pending":
+        return pending_menu()
+    if role == "banned":
+        return banned_menu()
     return bottom_menu(is_adminish(role))
 
 
@@ -211,6 +217,17 @@ def parse_chat_ids(raw: str) -> list[str]:
         seen.add(value)
         result.append(value)
     return result
+
+
+def banned_status_text(chat_id: str) -> str:
+    row = db.get_block_reason(chat_id)
+    reason = row["reason"] if row and row["reason"] else "Не указана"
+    blocked_at = row["blocked_at"] if row and row["blocked_at"] else "-"
+    return (
+        "Статус: доступ заблокирован.\n"
+        f"Причина: {reason}\n"
+        f"Дата блокировки: {blocked_at}"
+    )
 
 
 def broadcast_targets_by_group(group: str) -> list[str]:
@@ -404,7 +421,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     if role == "banned":
-        await say(context, chat_id, "Доступ заблокирован.")
+        await say(context, chat_id, banned_status_text(chat_id), banned_menu())
         return
 
     context.user_data.clear()
@@ -448,6 +465,18 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, get_support_text(), pending_menu())
             return
         await say(context, chat_id, "Выберите действие:", pending_menu())
+        return
+
+    if role == "banned":
+        text = (update.message.text or "").strip()
+        lower = text.lower()
+        if text == BUTTON_B_STATUS:
+            await say(context, chat_id, banned_status_text(chat_id), banned_menu())
+            return
+        if text == BUTTON_SUPPORT or text == BUTTON_P_SUPPORT or "вопрос" in lower or "поддерж" in lower:
+            await say(context, chat_id, get_support_text(), banned_menu())
+            return
+        await say(context, chat_id, "Выберите действие:", banned_menu())
         return
 
     if role not in ("super_owner", "admin", "user"):
@@ -1212,6 +1241,7 @@ async def _handle_admin_mode(
             return True
 
         db.set_role(target, "banned")
+        db.set_block_reason(target, reason, chat_id)
         removed = purge_user_clients(target)
         db.log_event("ban", chat_id, target, f"reason={reason} removed={removed}")
         context.user_data["admin_mode"] = None
