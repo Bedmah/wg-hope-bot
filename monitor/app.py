@@ -148,6 +148,18 @@ def init_monitor_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wg_peer_totals(
+                peer_pub TEXT PRIMARY KEY,
+                updated_ts TEXT NOT NULL,
+                last_raw_rx INTEGER NOT NULL,
+                last_raw_tx INTEGER NOT NULL,
+                total_rx INTEGER NOT NULL,
+                total_tx INTEGER NOT NULL
+            )
+            """
+        )
 
         conn.execute(
             """
@@ -221,6 +233,53 @@ def init_monitor_db() -> None:
                 "INSERT INTO monitor_auth(id, username, password_salt, password_hash, updated_at) VALUES(1, ?, ?, ?, ?)",
                 ("admin", salt, hashed, now_iso()),
             )
+        total_rows = conn.execute("SELECT COUNT(1) AS n FROM wg_peer_totals").fetchone()
+        if int(total_rows["n"] or 0) == 0:
+            peers = conn.execute("SELECT DISTINCT peer_pub FROM wg_peer_samples").fetchall()
+            for p in peers:
+                peer_pub = str(p["peer_pub"])
+                rows = conn.execute(
+                    "SELECT ts, rx, tx FROM wg_peer_samples WHERE peer_pub=? ORDER BY id ASC",
+                    (peer_pub,),
+                ).fetchall()
+                prev_rx = None
+                prev_tx = None
+                total_rx = 0
+                total_tx = 0
+                last_ts = now_iso()
+                for r in rows:
+                    rx = int(r["rx"])
+                    tx = int(r["tx"])
+                    if prev_rx is None or prev_tx is None:
+                        total_rx += max(rx, 0)
+                        total_tx += max(tx, 0)
+                    else:
+                        d_rx = rx - prev_rx
+                        d_tx = tx - prev_tx
+                        if d_rx < 0:
+                            d_rx = rx
+                        if d_tx < 0:
+                            d_tx = tx
+                        total_rx += max(d_rx, 0)
+                        total_tx += max(d_tx, 0)
+                    prev_rx = rx
+                    prev_tx = tx
+                    last_ts = r["ts"] or last_ts
+                if prev_rx is None or prev_tx is None:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO wg_peer_totals(peer_pub, updated_ts, last_raw_rx, last_raw_tx, total_rx, total_tx)
+                    VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(peer_pub) DO UPDATE SET
+                      updated_ts=excluded.updated_ts,
+                      last_raw_rx=excluded.last_raw_rx,
+                      last_raw_tx=excluded.last_raw_tx,
+                      total_rx=excluded.total_rx,
+                      total_tx=excluded.total_tx
+                    """,
+                    (peer_pub, last_ts, int(prev_rx), int(prev_tx), int(total_rx), int(total_tx)),
+                )
         conn.commit()
 
 
@@ -598,6 +657,35 @@ def collect_once() -> None:
                     peer["tx"],
                 ),
             )
+            prev_total = conn.execute(
+                "SELECT last_raw_rx, last_raw_tx, total_rx, total_tx FROM wg_peer_totals WHERE peer_pub=?",
+                (peer["peer_pub"],),
+            ).fetchone()
+            if prev_total:
+                d_rx = int(peer["rx"]) - int(prev_total["last_raw_rx"])
+                d_tx = int(peer["tx"]) - int(prev_total["last_raw_tx"])
+                if d_rx < 0:
+                    d_rx = int(peer["rx"])
+                if d_tx < 0:
+                    d_tx = int(peer["tx"])
+                total_rx = int(prev_total["total_rx"]) + max(d_rx, 0)
+                total_tx = int(prev_total["total_tx"]) + max(d_tx, 0)
+            else:
+                total_rx = max(int(peer["rx"]), 0)
+                total_tx = max(int(peer["tx"]), 0)
+            conn.execute(
+                """
+                INSERT INTO wg_peer_totals(peer_pub, updated_ts, last_raw_rx, last_raw_tx, total_rx, total_tx)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(peer_pub) DO UPDATE SET
+                  updated_ts=excluded.updated_ts,
+                  last_raw_rx=excluded.last_raw_rx,
+                  last_raw_tx=excluded.last_raw_tx,
+                  total_rx=excluded.total_rx,
+                  total_tx=excluded.total_tx
+                """,
+                (peer["peer_pub"], ts, int(peer["rx"]), int(peer["tx"]), int(total_rx), int(total_tx)),
+            )
 
         collect_uplink_once(conn, ts)
 
@@ -765,6 +853,11 @@ def get_latest_prev_samples(conn: sqlite3.Connection) -> dict[str, tuple[sqlite3
         prev = items[1] if len(items) > 1 else None
         out[peer_pub] = (latest, prev)
     return out
+
+
+def peer_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    rows = conn.execute("SELECT peer_pub, total_rx, total_tx FROM wg_peer_totals").fetchall()
+    return {str(r["peer_pub"]): (int(r["total_rx"]), int(r["total_tx"])) for r in rows}
 
 
 def peer_rates_mbps(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
@@ -1000,6 +1093,7 @@ def load_dashboard_data(
         for c in clients:
             by_owner.setdefault(c["owner_chat_id"], []).append(c)
         latest = get_latest_samples(conn)
+        totals = peer_total_bytes(conn)
         rates = peer_rates_mbps(conn)
 
         out: list[dict[str, Any]] = []
@@ -1029,10 +1123,15 @@ def load_dashboard_data(
                 region_counter[label] += 1
             for c in rows:
                 sample = latest.get(c["pub"])
+                total_pair = totals.get(c["pub"])
                 if sample:
+                    last_hs = max(last_hs, int(sample["latest_handshake"]))
+                if total_pair:
+                    total_rx += int(total_pair[0])
+                    total_tx += int(total_pair[1])
+                elif sample:
                     total_rx += int(sample["rx"])
                     total_tx += int(sample["tx"])
-                    last_hs = max(last_hs, int(sample["latest_handshake"]))
                 rx_rate_peer, tx_rate_peer = rates.get(c["pub"], (0.0, 0.0))
                 rx_rate_user += rx_rate_peer
                 tx_rate_user += tx_rate_peer
@@ -1188,6 +1287,7 @@ def load_user_detail(
             (chat_id,),
         ).fetchall()
         latest = get_latest_samples(conn)
+        totals = peer_total_bytes(conn)
         rates = peer_rates_mbps(conn)
         cfg_by_pub = {c["pub"]: c["name"] for c in clients}
 
@@ -1199,6 +1299,7 @@ def load_user_detail(
         user_hs = [0] * bucket_count
         for c in clients:
             sample = latest.get(c["pub"])
+            total_pair = totals.get(c["pub"])
             rx24, tx24 = traffic_delta(conn, c["pub"], 24)
             rx7d, tx7d = traffic_delta(conn, c["pub"], 24 * 7)
             traffic_series, handshake_series = peer_series(conn, c["pub"], start_dt, bucket_seconds, bucket_count)
@@ -1220,8 +1321,8 @@ def load_user_detail(
                     "created_at": iso_to_local_str(c["created_at"]),
                     "endpoint": sample["endpoint"] if sample else "-",
                     "latest_handshake": epoch_to_iso(int(sample["latest_handshake"])) if sample and int(sample["latest_handshake"]) > 0 else "-",
-                    "rx_total": human_bytes(int(sample["rx"])) if sample else "0 B",
-                    "tx_total": human_bytes(int(sample["tx"])) if sample else "0 B",
+                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(sample["rx"])) if sample else "0 B"),
+                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(sample["tx"])) if sample else "0 B"),
                     "rx_rate_mbps": round(rates.get(c["pub"], (0.0, 0.0))[0], 2),
                     "tx_rate_mbps": round(rates.get(c["pub"], (0.0, 0.0))[1], 2),
                     "rx_24h": human_bytes(rx24),
@@ -1752,17 +1853,19 @@ def load_user_realtime(chat_id: str) -> dict[str, Any] | None:
             (chat_id,),
         ).fetchall()
         latest = get_latest_samples(conn)
+        totals = peer_total_bytes(conn)
         rates = peer_rates_mbps(conn)
         configs: list[dict[str, Any]] = []
         for c in clients:
             sample = latest.get(c["pub"])
+            total_pair = totals.get(c["pub"])
             rx_rate, tx_rate = rates.get(c["pub"], (0.0, 0.0))
             configs.append(
                 {
                     "pub": c["pub"],
                     "name": c["name"],
-                    "rx_total": human_bytes(int(sample["rx"])) if sample else "0 B",
-                    "tx_total": human_bytes(int(sample["tx"])) if sample else "0 B",
+                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(sample["rx"])) if sample else "0 B"),
+                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(sample["tx"])) if sample else "0 B"),
                     "latest_handshake": epoch_to_iso(int(sample["latest_handshake"])) if sample and int(sample["latest_handshake"] or 0) > 0 else "-",
                     "rx_rate_mbps": round(rx_rate, 2),
                     "tx_rate_mbps": round(tx_rate, 2),
