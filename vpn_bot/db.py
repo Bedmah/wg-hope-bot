@@ -16,6 +16,8 @@ from .settings import DB_PATH, SUPER_OWNER_CHAT_ID, DEFAULT_USER_LIMIT, ADMIN_LI
 ROLES = ("super_owner", "admin", "user", "pending", "banned")
 BOT_TEXT_KEYS = ("user_guide", "regions_text", "about_text", "wireguard_text", "support_text")
 UPLINK_TYPES = ("system", "amneziawg", "wireguard")
+SQLITE_TIMEOUT_SEC = 30.0
+SQLITE_BUSY_TIMEOUT_MS = 30000
 
 
 def now_iso() -> str:
@@ -23,8 +25,12 @@ def now_iso() -> str:
 
 
 def _db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_TIMEOUT_SEC)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
     return conn
 
 

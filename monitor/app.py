@@ -29,6 +29,8 @@ MONITOR_POLL_SEC = int(os.environ.get("MONITOR_POLL_SEC", "30"))
 MONITOR_KEEP_DAYS = int(os.environ.get("MONITOR_KEEP_DAYS", "90"))
 DNS_CACHE_DAYS = int(os.environ.get("MONITOR_DNS_CACHE_DAYS", "7"))
 PENDING_PREVIEW_LIMIT = int(os.environ.get("MONITOR_PENDING_PREVIEW_LIMIT", "20"))
+SQLITE_TIMEOUT_SEC = float(os.environ.get("SQLITE_TIMEOUT_SEC", "30"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "30000"))
 
 SERVICE_BY_PORT = {
     53: "DNS",
@@ -76,8 +78,12 @@ def iso_to_local_str(ts: str | None, fallback: str = "-") -> str:
 
 
 def db_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_TIMEOUT_SEC)
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
     return conn
 
 
@@ -135,6 +141,7 @@ def init_monitor_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wg_peer_events_pub_ts ON wg_peer_events(peer_pub, event_ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wg_peer_events_type_pub_ts ON wg_peer_events(event_type, peer_pub, event_ts)")
 
         conn.execute(
             """
@@ -157,6 +164,16 @@ def init_monitor_db() -> None:
                 last_raw_tx INTEGER NOT NULL,
                 total_rx INTEGER NOT NULL,
                 total_tx INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wg_peer_rates(
+                peer_pub TEXT PRIMARY KEY,
+                updated_ts TEXT NOT NULL,
+                rx_mbps REAL NOT NULL,
+                tx_mbps REAL NOT NULL
             )
             """
         )
@@ -702,6 +719,8 @@ def collect_once() -> None:
                 "SELECT last_endpoint, last_handshake, last_rx, last_tx FROM wg_peer_state WHERE peer_pub=?",
                 (peer["peer_pub"],),
             ).fetchone()
+            rx_mbps = 0.0
+            tx_mbps = 0.0
             if prev:
                 if peer["latest_handshake"] > 0 and peer["latest_handshake"] != int(prev["last_handshake"]):
                     conn.execute(
@@ -724,6 +743,16 @@ def collect_once() -> None:
                         "INSERT INTO wg_peer_events(event_ts, peer_pub, event_type, details) VALUES(?,?,?,?)",
                         (ts, peer["peer_pub"], "traffic", f"delta_rx={delta_rx} delta_tx={delta_tx}"),
                     )
+                try:
+                    t_prev = parse_iso(str(prev["last_seen_ts"])) if prev["last_seen_ts"] else None
+                    t_now = parse_iso(ts)
+                    if t_prev is not None:
+                        dt = max((t_now - t_prev).total_seconds(), 1.0)
+                        rx_mbps = (max(delta_rx, 0) * 8.0) / dt / 1_000_000
+                        tx_mbps = (max(delta_tx, 0) * 8.0) / dt / 1_000_000
+                except Exception:
+                    rx_mbps = 0.0
+                    tx_mbps = 0.0
 
             conn.execute(
                 """
@@ -773,6 +802,17 @@ def collect_once() -> None:
                   total_tx=excluded.total_tx
                 """,
                 (peer["peer_pub"], ts, int(peer["rx"]), int(peer["tx"]), int(total_rx), int(total_tx)),
+            )
+            conn.execute(
+                """
+                INSERT INTO wg_peer_rates(peer_pub, updated_ts, rx_mbps, tx_mbps)
+                VALUES(?,?,?,?)
+                ON CONFLICT(peer_pub) DO UPDATE SET
+                  updated_ts=excluded.updated_ts,
+                  rx_mbps=excluded.rx_mbps,
+                  tx_mbps=excluded.tx_mbps
+                """,
+                (peer["peer_pub"], ts, float(rx_mbps), float(tx_mbps)),
             )
 
         collect_uplink_once(conn, ts)
@@ -911,9 +951,14 @@ def redirect_login() -> RedirectResponse:
 def get_latest_samples(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     rows = conn.execute(
         """
-        SELECT s.peer_pub, s.endpoint, s.latest_handshake, s.rx, s.tx, s.ts
-        FROM wg_peer_samples s
-        JOIN (SELECT peer_pub, MAX(id) AS max_id FROM wg_peer_samples GROUP BY peer_pub) x ON x.max_id = s.id
+        SELECT
+          peer_pub,
+          last_endpoint AS endpoint,
+          last_handshake AS latest_handshake,
+          last_rx AS rx,
+          last_tx AS tx,
+          last_seen_ts AS ts
+        FROM wg_peer_state
         """
     ).fetchall()
     return {r["peer_pub"]: r for r in rows}
@@ -954,26 +999,12 @@ def uplink_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
 
 
 def peer_rates_mbps(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
-    out: dict[str, tuple[float, float]] = {}
-    by_peer = get_latest_prev_samples(conn)
-    for peer_pub, pair in by_peer.items():
-        latest, prev = pair
-        if not prev:
-            out[peer_pub] = (0.0, 0.0)
-            continue
-        try:
-            t1 = parse_iso(prev["ts"])
-            t2 = parse_iso(latest["ts"])
-            dt = max((t2 - t1).total_seconds(), 1.0)
-            d_rx = int(latest["rx"]) - int(prev["rx"])
-            d_tx = int(latest["tx"]) - int(prev["tx"])
-            if d_rx < 0:
-                d_rx = int(latest["rx"])
-            if d_tx < 0:
-                d_tx = int(latest["tx"])
-            out[peer_pub] = ((d_rx * 8.0) / dt / 1_000_000, (d_tx * 8.0) / dt / 1_000_000)
-        except Exception:
-            out[peer_pub] = (0.0, 0.0)
+    out = {
+        str(r["peer_pub"]): (float(r["rx_mbps"] or 0.0), float(r["tx_mbps"] or 0.0))
+        for r in conn.execute("SELECT peer_pub, rx_mbps, tx_mbps FROM wg_peer_rates").fetchall()
+    }
+    for r in conn.execute("SELECT peer_pub FROM wg_peer_state").fetchall():
+        out.setdefault(str(r["peer_pub"]), (0.0, 0.0))
     return out
 
 
@@ -984,6 +1015,20 @@ def handshake_count(conn: sqlite3.Connection, peer_pub: str, hours: int) -> int:
         (peer_pub, since),
     ).fetchone()
     return int(row["n"]) if row else 0
+
+
+def handshake_counts(conn: sqlite3.Connection, hours: int) -> dict[str, int]:
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+    rows = conn.execute(
+        """
+        SELECT peer_pub, COUNT(*) AS n
+        FROM wg_peer_events
+        WHERE event_type='handshake' AND event_ts>=?
+        GROUP BY peer_pub
+        """,
+        (since,),
+    ).fetchall()
+    return {str(r["peer_pub"]): int(r["n"] or 0) for r in rows}
 
 
 def traffic_delta(conn: sqlite3.Connection, peer_pub: str, hours: int) -> tuple[int, int]:
@@ -1188,6 +1233,25 @@ def load_dashboard_data(
         latest = get_latest_samples(conn)
         totals = peer_total_bytes(conn)
         rates = peer_rates_mbps(conn)
+        hs24 = handshake_counts(conn, 24)
+        hs7d = handshake_counts(conn, 24 * 7)
+        since_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat().replace("+00:00", "Z")
+        top_rows = conn.execute(
+            """
+            SELECT owner_chat_id, COALESCE(NULLIF(domain,''), dst_ip) AS label, COUNT(*) AS n
+            FROM net_destinations
+            WHERE ts>=?
+            GROUP BY owner_chat_id, label
+            ORDER BY owner_chat_id, n DESC
+            """,
+            (since_24h,),
+        ).fetchall()
+        top_by_owner: dict[str, list[str]] = {}
+        for r in top_rows:
+            owner = str(r["owner_chat_id"])
+            entries = top_by_owner.setdefault(owner, [])
+            if len(entries) < 3:
+                entries.append(f"{r['label']} ({r['n']})")
 
         out: list[dict[str, Any]] = []
         role_counter: Counter[str] = Counter()
@@ -1228,9 +1292,9 @@ def load_dashboard_data(
                 rx_rate_peer, tx_rate_peer = rates.get(c["pub"], (0.0, 0.0))
                 rx_rate_user += rx_rate_peer
                 tx_rate_user += tx_rate_peer
-                h24_peer = handshake_count(conn, c["pub"], 24)
+                h24_peer = hs24.get(str(c["pub"]), 0)
                 h24 += h24_peer
-                h7d += handshake_count(conn, c["pub"], 24 * 7)
+                h7d += hs7d.get(str(c["pub"]), 0)
                 if h24_peer > 0:
                     active24 += 1
             role_counter[str(u["role"] or "unknown")] += 1
@@ -1261,7 +1325,7 @@ def load_dashboard_data(
                     "last_handshake": epoch_to_iso(last_hs) if last_hs > 0 else "-",
                     "last_seen": iso_to_local_str(u["last_seen"]),
                     "last_seen_raw": u["last_seen"] or "",
-                    "top_destinations": ", ".join(top_destinations_for_owner(conn, chat_id, 24, 3)) or "-",
+                    "top_destinations": ", ".join(top_by_owner.get(str(chat_id), [])) or "-",
                     "configs_regions": " | ".join(cfg_regions) if cfg_regions else "-",
                 }
             )
