@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
 import subprocess
+import threading
+from contextlib import contextmanager
 from typing import Iterable
 
 from . import db
 from .settings import VPN_SUBNET, WG_INTERFACE
 
+try:
+    import fcntl
+except Exception:  # pragma: no cover - non-linux fallback
+    fcntl = None
+
 PRIO_BASE = 10000
 PRIO_MAX = 13000
 MANAGED_TABLE_PREFIX = "botif_"
+ROUTING_LOCK_PATH = "/tmp/wg-hope-routing.lock"
+
+_ROUTING_LOCK = threading.RLock()
 
 
 def _run(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -29,6 +40,24 @@ def _require_tools() -> bool:
 def _safe_iface_token(name: str) -> str:
     token = re.sub(r"[^a-zA-Z0-9_]+", "_", name).strip("_").lower()
     return token or "if"
+
+
+@contextmanager
+def _routing_lock():
+    with _ROUTING_LOCK:
+        fh = None
+        try:
+            if fcntl is not None and os.name != "nt":
+                fh = open(ROUTING_LOCK_PATH, "a+", encoding="utf-8")
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            if fh is not None:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                fh.close()
 
 
 def table_name_for_iface(iface: str) -> str:
@@ -109,6 +138,24 @@ def _delete_managed_rules() -> None:
         _run("ip", "-4", "rule", "del", "priority", str(pref), check=False)
 
 
+def _delete_rules_for_source_ip(source_ip: str) -> None:
+    p = _run("ip", "-4", "rule", "show", check=False)
+    if p.returncode != 0:
+        return
+    needle = f"from {source_ip}/32"
+    for line in p.stdout.splitlines():
+        line = line.strip()
+        if needle not in line or ":" not in line:
+            continue
+        pref_str = line.split(":", 1)[0].strip()
+        if not pref_str.isdigit():
+            continue
+        pref = int(pref_str)
+        if pref < PRIO_BASE or pref >= PRIO_MAX:
+            continue
+        _run("ip", "-4", "rule", "del", "priority", str(pref), check=False)
+
+
 def _ensure_iptables_rule(args: Iterable[str], table: str = "filter") -> None:
     if _run_ok("iptables", "-t", table, "-C", *args):
         return
@@ -177,6 +224,34 @@ def _effective_regions_map() -> dict[str, str]:
         iface_down = bool(health and int(health["is_ok"]) == 0)
         effective[region_code] = fallback_iface if iface_down else iface_name
     return effective
+
+
+def _client_target_interface(region_code: str | None) -> tuple[str, int] | None:
+    regions = _effective_regions_map()
+    interfaces = _interface_map()
+    default_region = db.get_default_region_code()
+    region = (region_code or default_region).strip().lower()
+    iface_name = regions.get(region) or regions.get(default_region)
+    if not iface_name:
+        return None
+    iface = interfaces.get(iface_name)
+    if not iface:
+        return None
+    table_id = iface.get("table_id")
+    if table_id is None:
+        return None
+    try:
+        return iface_name, int(table_id)
+    except Exception:
+        return None
+
+
+def _ensure_client_iptables_for_iface(iface_name: str) -> None:
+    _ensure_iptables_rule(["POSTROUTING", "-s", VPN_SUBNET, "-o", iface_name, "-j", "MASQUERADE"], table="nat")
+    _ensure_iptables_rule(["FORWARD", "-i", WG_INTERFACE, "-o", iface_name, "-s", VPN_SUBNET, "-j", "ACCEPT"])
+    _ensure_iptables_rule(
+        ["FORWARD", "-i", iface_name, "-o", WG_INTERFACE, "-d", VPN_SUBNET, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
+    )
 
 
 def _sync_rules_for_clients() -> None:
@@ -272,12 +347,42 @@ def _sync_iptables() -> None:
 def sync_client_egress_routes() -> None:
     if not _require_tools():
         return
-    for iface in db.list_uplink_interfaces():
-        if int(iface["enabled"]) != 1:
-            continue
-        table_id = iface["table_id"]
-        if table_id is None:
-            continue
-        _configure_iface_table(iface["name"], int(table_id))
-    _sync_rules_for_clients()
-    _sync_iptables()
+    with _routing_lock():
+        for iface in db.list_uplink_interfaces():
+            if int(iface["enabled"]) != 1:
+                continue
+            table_id = iface["table_id"]
+            if table_id is None:
+                continue
+            _configure_iface_table(iface["name"], int(table_id))
+        _sync_rules_for_clients()
+        _sync_iptables()
+
+
+def apply_client_egress_route(client_ip: str, region_code: str | None = None) -> None:
+    if not _require_tools():
+        return
+    ip = (client_ip or "").strip()
+    host = _host_from_ip(ip)
+    if not ip or not host:
+        return
+    with _routing_lock():
+        target = _client_target_interface(region_code)
+        if not target:
+            _delete_rules_for_source_ip(ip)
+            return
+        iface_name, table_id = target
+        _configure_iface_table(iface_name, table_id)
+        _ensure_client_iptables_for_iface(iface_name)
+        _delete_rules_for_source_ip(ip)
+        _ensure_rule(ip, table_name_for_iface(iface_name), PRIO_BASE + host)
+
+
+def remove_client_egress_route(client_ip: str) -> None:
+    if not _require_tools():
+        return
+    ip = (client_ip or "").strip()
+    if not ip:
+        return
+    with _routing_lock():
+        _delete_rules_for_source_ip(ip)

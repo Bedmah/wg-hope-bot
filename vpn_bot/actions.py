@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from . import db
 from . import chatlog
-from .routing import sync_client_egress_routes
+from .routing import apply_client_egress_route, remove_client_egress_route
 from .qr import make_qr
 from .settings import CLIENTS_DIR, SUPPORT_HANDLE
 from .wireguard import run, allocate_ip, validate_ip, add_peer, remove_peer, remove_peer_block, build_client_config
@@ -197,7 +197,7 @@ async def create_client(
         )
 
         try:
-            sync_client_egress_routes()
+            apply_client_egress_route(ip, region)
         except Exception as route_exc:
             db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
 
@@ -277,7 +277,7 @@ async def revoke_client(context: ContextTypes.DEFAULT_TYPE, owner_chat_id: str, 
             pass
 
     try:
-        sync_client_egress_routes()
+        remove_client_egress_route(row["ip"])
     except Exception as route_exc:
         db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
 
@@ -299,6 +299,10 @@ def purge_user_clients(owner_chat_id: str) -> int:
             pass
 
         db.delete_client(owner_chat_id, stored_name)
+        try:
+            remove_client_egress_route(row["ip"])
+        except Exception:
+            pass
         files = files_from_stored(owner_chat_id, stored_name)
         for path in files.values():
             try:
@@ -307,11 +311,6 @@ def purge_user_clients(owner_chat_id: str) -> int:
             except Exception:
                 pass
         removed += 1
-
-    try:
-        sync_client_egress_routes()
-    except Exception as route_exc:
-        db.log_event("region_sync_warn", owner_chat_id, owner_chat_id, str(route_exc))
 
     db.log_event("user_purge", owner_chat_id, owner_chat_id, f"removed={removed}")
     return removed

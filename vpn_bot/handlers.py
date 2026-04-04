@@ -13,7 +13,7 @@ from telegram.ext import ContextTypes, CommandHandler, MessageHandler, CallbackQ
 from . import db
 from . import chatlog
 from .regions import normalize_region
-from .routing import sync_client_egress_routes
+from .routing import apply_client_egress_route
 from .server_admin import (
     add_interface,
     add_or_update_region,
@@ -1631,11 +1631,15 @@ async def on_inline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await say(context, chat_id, "Конфиг не найден.")
             return
         region_code = normalize_region(region_code)
+        if normalize_region(row["region"]) == region_code:
+            label = display_name_for(chat_id, row["name"])
+            await say(context, chat_id, f"Уже выбран регион {db.region_label_by_code(region_code)} для {label}.")
+            return
         if not db.set_client_region(chat_id, int(client_id_raw), region_code):
             await say(context, chat_id, "Не удалось изменить регион.")
             return
         try:
-            sync_client_egress_routes()
+            apply_client_egress_route(row["ip"], region_code)
         except Exception as exc:
             db.log_event("region_sync_error", chat_id, chat_id, str(exc))
             await say(context, chat_id, "Регион сохранен, но применение маршрутизации завершилось с ошибкой.")
