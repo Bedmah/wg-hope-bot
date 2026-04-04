@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WG Monitor - Пользователи</title>
+  <title>WG Monitor - РџРѕР»СЊР·РѕРІР°С‚РµР»Рё</title>
   <style>
     :root {
       --bg:#f4f6fb;
@@ -56,63 +56,63 @@
   <div class="top">
     <div>
       <strong>WG Hope Monitor</strong>
-      <span class="muted">Обновлено: <span id="rt-updated-at">{{ updated_at }}</span></span>
+      <span class="muted">РћР±РЅРѕРІР»РµРЅРѕ: <span id="rt-updated-at">{{ updated_at }}</span></span>
     </div>
     <div class="links">
-      <span class="muted">Время сервера: {{ server_time }}</span>
-      <span class="muted">Пользователь: {{ auth_user }}</span>
-      <a href="/servers">Серверы</a>
-      <a href="/settings">Настройки</a>
-      <a href="/logout">Выйти</a>
+      <span class="muted">Р’СЂРµРјСЏ СЃРµСЂРІРµСЂР°: {{ server_time }}</span>
+      <span class="muted">РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ: {{ auth_user }}</span>
+      <a href="/servers">РЎРµСЂРІРµСЂС‹</a>
+      <a href="/settings">РќР°СЃС‚СЂРѕР№РєРё</a>
+      <a href="/logout">Р’С‹Р№С‚Рё</a>
     </div>
   </div>
 
   <div class="wrap">
     <div class="stats">
-      <div class="card"><div class="k">Пользователи всего</div><div class="v">{{ stats.total_users }}</div></div>
-      <div class="card"><div class="k">Показано по фильтру</div><div class="v">{{ stats.filtered_users }}</div></div>
-      <div class="card"><div class="k">Активные за 24ч</div><div class="v good">{{ stats.active_users_24h }}</div></div>
-      <div class="card"><div class="k">Конфигов всего</div><div class="v">{{ stats.total_configs }}</div></div>
-      <div class="card"><div class="k">Ожидают</div><div class="v warn">{{ stats.pending_users }}</div></div>
-      <div class="card"><div class="k">Забанены</div><div class="v bad">{{ stats.banned_users }}</div></div>
-      <div class="card"><div class="k">Админы</div><div class="v">{{ stats.admins_total }}</div></div>
-      <div class="card"><div class="k">Handshake 24ч</div><div class="v">{{ stats.handshakes_24h }}</div><div class="sub">7д: {{ stats.handshakes_7d }}</div></div>
+      <div class="card"><div class="k">РџРѕР»СЊР·РѕРІР°С‚РµР»Рё РІСЃРµРіРѕ</div><div class="v">{{ stats.total_users }}</div></div>
+      <div class="card"><div class="k">РџРѕРєР°Р·Р°РЅРѕ РїРѕ С„РёР»СЊС‚СЂСѓ</div><div class="v">{{ stats.filtered_users }}</div></div>
+      <div class="card"><div class="k">РђРєС‚РёРІРЅС‹Рµ Р·Р° 24С‡</div><div class="v good">{{ stats.active_users_24h }}</div></div>
+      <div class="card"><div class="k">РљРѕРЅС„РёРіРѕРІ РІСЃРµРіРѕ</div><div class="v">{{ stats.total_configs }}</div></div>
+      <div class="card"><div class="k">РћР¶РёРґР°СЋС‚</div><div class="v warn">{{ stats.pending_users }}</div></div>
+      <div class="card"><div class="k">Р—Р°Р±Р°РЅРµРЅС‹</div><div class="v bad">{{ stats.banned_users }}</div></div>
+      <div class="card"><div class="k">РђРґРјРёРЅС‹</div><div class="v">{{ stats.admins_total }}</div></div>
+      <div class="card"><div class="k">Handshake 24С‡</div><div class="v">{{ stats.handshakes_24h }}</div><div class="sub">7Рґ: {{ stats.handshakes_7d }}</div></div>
     </div>
 
     <div class="summary">
       <div class="card">
-        <div class="k">Сетевой итог по пользователям</div>
+        <div class="k">РЎРµС‚РµРІРѕР№ РёС‚РѕРі РїРѕ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏРј</div>
         <div><strong>RX:</strong> <span id="rt-total-rx">{{ stats.traffic_rx_total }}</span></div>
         <div><strong>TX:</strong> <span id="rt-total-tx">{{ stats.traffic_tx_total }}</span></div>
-        <div><strong>Скорость RX/TX:</strong> <span id="rt-total-rx-rate">{{ stats.rx_rate_total_mbps }}</span> / <span id="rt-total-tx-rate">{{ stats.tx_rate_total_mbps }}</span> Мбит/с</div>
+        <div><strong>РЎРєРѕСЂРѕСЃС‚СЊ RX/TX:</strong> <span id="rt-total-rx-rate">{{ stats.rx_rate_total_mbps }}</span> / <span id="rt-total-tx-rate">{{ stats.tx_rate_total_mbps }}</span> РњР±РёС‚/СЃ</div>
       </div>
       <div class="card">
-        <div class="k">Быстрые действия</div>
+        <div class="k">Р‘С‹СЃС‚СЂС‹Рµ РґРµР№СЃС‚РІРёСЏ</div>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <a class="btn btn-muted" href="/servers">Открыть «Серверы»</a>
-          <a class="btn btn-muted" href="/settings">Открыть «Настройки»</a>
+          <a class="btn btn-muted" href="/servers">РћС‚РєСЂС‹С‚СЊ В«РЎРµСЂРІРµСЂС‹В»</a>
+          <a class="btn btn-muted" href="/settings">РћС‚РєСЂС‹С‚СЊ В«РќР°СЃС‚СЂРѕР№РєРёВ»</a>
         </div>
-        <div class="sub" style="margin-top:8px;">Ручной тест запускается в боте: <strong>Админка -> Логи -> Ручной тест</strong>.</div>
+        <div class="sub" style="margin-top:8px;">Р СѓС‡РЅРѕР№ С‚РµСЃС‚ Р·Р°РїСѓСЃРєР°РµС‚СЃСЏ РІ Р±РѕС‚Рµ: <strong>РђРґРјРёРЅРєР° -> Р›РѕРіРё -> Р СѓС‡РЅРѕР№ С‚РµСЃС‚</strong>.</div>
       </div>
     </div>
 
     <div class="charts">
       <div class="chart-box">
-        <div class="k">Распределение ролей</div>
+        <div class="k">Р Р°СЃРїСЂРµРґРµР»РµРЅРёРµ СЂРѕР»РµР№</div>
         <canvas id="rolesChart" width="460" height="220"></canvas>
       </div>
       <div class="chart-box">
-        <div class="k">Топ регионов по количеству конфигов</div>
+        <div class="k">РўРѕРї СЂРµРіРёРѕРЅРѕРІ РїРѕ РєРѕР»РёС‡РµСЃС‚РІСѓ РєРѕРЅС„РёРіРѕРІ</div>
         <canvas id="regionsChart" width="460" height="220"></canvas>
       </div>
       <div class="chart-box">
-        <div class="k">Новые заявки (pending)</div>
+        <div class="k">РќРѕРІС‹Рµ Р·Р°СЏРІРєРё (pending)</div>
         <table class="pending-table">
           <thead>
             <tr>
-              <th>Пользователь</th>
+              <th>РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ</th>
               <th>chat_id</th>
-              <th>Запрос доступа</th>
+              <th>Р—Р°РїСЂРѕСЃ РґРѕСЃС‚СѓРїР°</th>
             </tr>
           </thead>
           <tbody id="pending-rows">
@@ -124,13 +124,13 @@
             </tr>
             {% endfor %}
             {% if not pending_requests %}
-            <tr><td colspan="3" class="muted">Новых заявок нет</td></tr>
+            <tr><td colspan="3" class="muted">РќРѕРІС‹С… Р·Р°СЏРІРѕРє РЅРµС‚</td></tr>
             {% endif %}
           </tbody>
         </table>
       </div>
       <div class="chart-box">
-        <div class="k">Нагрузка сервера</div>
+        <div class="k">РќР°РіСЂСѓР·РєР° СЃРµСЂРІРµСЂР°</div>
         <div class="load-grid">
           <div>
             <div>CPU: <strong id="load-cpu">{{ server_load.cpu_percent if server_load else 0 }}</strong>%</div>
@@ -146,7 +146,7 @@
           </div>
           <div>
             <div>Load avg: <strong id="load-avg">{% if server_load %}{{ server_load.load1 }}/{{ server_load.load5 }}/{{ server_load.load15 }}{% else %}0/0/0{% endif %}</strong></div>
-            <div class="muted">Uptime: <span id="load-uptime">{% if server_load %}{{ server_load.uptime_hours }}{% else %}0{% endif %}</span> ч</div>
+            <div class="muted">Uptime: <span id="load-uptime">{% if server_load %}{{ server_load.uptime_hours }}{% else %}0{% endif %}</span> С‡</div>
           </div>
         </div>
         <div class="muted">RAM: <span id="load-mem-bytes">{% if server_load %}{{ server_load.mem_used }} / {{ server_load.mem_total }}{% else %}-{% endif %}</span></div>
@@ -155,9 +155,9 @@
     </div>
 
     <form class="filters" method="get" action="/">
-      <input type="text" name="q" placeholder="Поиск: chat_id, @username, имя, регион, назначения" value="{{ filters.q }}" style="min-width:320px;" />
+      <input type="text" name="q" placeholder="РџРѕРёСЃРє: chat_id, @username, РёРјСЏ, СЂРµРіРёРѕРЅ, РЅР°Р·РЅР°С‡РµРЅРёСЏ" value="{{ filters.q }}" style="min-width:320px;" />
       <select name="role">
-        <option value="" {% if not filters.role %}selected{% endif %}>Все роли</option>
+        <option value="" {% if not filters.role %}selected{% endif %}>Р’СЃРµ СЂРѕР»Рё</option>
         <option value="super_owner" {% if filters.role == "super_owner" %}selected{% endif %}>super_owner</option>
         <option value="admin" {% if filters.role == "admin" %}selected{% endif %}>admin</option>
         <option value="user" {% if filters.role == "user" %}selected{% endif %}>user</option>
@@ -165,44 +165,44 @@
         <option value="banned" {% if filters.role == "banned" %}selected{% endif %}>banned</option>
       </select>
       <select name="has_configs">
-        <option value="" {% if not filters.has_configs %}selected{% endif %}>Конфиги: все</option>
-        <option value="yes" {% if filters.has_configs == "yes" %}selected{% endif %}>С конфигами</option>
-        <option value="no" {% if filters.has_configs == "no" %}selected{% endif %}>Без конфигов</option>
+        <option value="" {% if not filters.has_configs %}selected{% endif %}>РљРѕРЅС„РёРіРё: РІСЃРµ</option>
+        <option value="yes" {% if filters.has_configs == "yes" %}selected{% endif %}>РЎ РєРѕРЅС„РёРіР°РјРё</option>
+        <option value="no" {% if filters.has_configs == "no" %}selected{% endif %}>Р‘РµР· РєРѕРЅС„РёРіРѕРІ</option>
       </select>
       <select name="activity">
-        <option value="" {% if not filters.activity %}selected{% endif %}>Активность 24ч: все</option>
-        <option value="active24" {% if filters.activity == "active24" %}selected{% endif %}>Активные 24ч</option>
-        <option value="inactive24" {% if filters.activity == "inactive24" %}selected{% endif %}>Неактивные 24ч</option>
+        <option value="" {% if not filters.activity %}selected{% endif %}>РђРєС‚РёРІРЅРѕСЃС‚СЊ 24С‡: РІСЃРµ</option>
+        <option value="active24" {% if filters.activity == "active24" %}selected{% endif %}>РђРєС‚РёРІРЅС‹Рµ 24С‡</option>
+        <option value="inactive24" {% if filters.activity == "inactive24" %}selected{% endif %}>РќРµР°РєС‚РёРІРЅС‹Рµ 24С‡</option>
       </select>
       <select name="seen">
-        <option value="" {% if not filters.seen %}selected{% endif %}>Последняя активность: все</option>
-        <option value="24h" {% if filters.seen == "24h" %}selected{% endif %}>За 24 часа</option>
-        <option value="7d" {% if filters.seen == "7d" %}selected{% endif %}>За 7 дней</option>
-        <option value="30d" {% if filters.seen == "30d" %}selected{% endif %}>За 30 дней</option>
-        <option value="never" {% if filters.seen == "never" %}selected{% endif %}>Без активности</option>
+        <option value="" {% if not filters.seen %}selected{% endif %}>РџРѕСЃР»РµРґРЅСЏСЏ Р°РєС‚РёРІРЅРѕСЃС‚СЊ: РІСЃРµ</option>
+        <option value="24h" {% if filters.seen == "24h" %}selected{% endif %}>Р—Р° 24 С‡Р°СЃР°</option>
+        <option value="7d" {% if filters.seen == "7d" %}selected{% endif %}>Р—Р° 7 РґРЅРµР№</option>
+        <option value="30d" {% if filters.seen == "30d" %}selected{% endif %}>Р—Р° 30 РґРЅРµР№</option>
+        <option value="never" {% if filters.seen == "never" %}selected{% endif %}>Р‘РµР· Р°РєС‚РёРІРЅРѕСЃС‚Рё</option>
       </select>
-      <button class="btn" type="submit">Применить</button>
-      <a class="btn btn-muted" href="/">Сбросить</a>
-      <span class="muted">Найдено: {{ users|length }}</span>
+      <button class="btn" type="submit">РџСЂРёРјРµРЅРёС‚СЊ</button>
+      <a class="btn btn-muted" href="/">РЎР±СЂРѕСЃРёС‚СЊ</a>
+      <span class="muted">РќР°Р№РґРµРЅРѕ: {{ users|length }}</span>
     </form>
 
     <table>
       <thead>
         <tr>
-          <th>Пользователь</th>
+          <th>РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ</th>
           <th>chat_id</th>
-          <th>Роль</th>
-          <th>Конфиги</th>
-          <th>Активно 24ч</th>
-          <th>Handshake 24ч</th>
-          <th>Handshake 7д</th>
-          <th>RX (всего)</th>
-          <th>TX (всего)</th>
-          <th>Скорость RX/TX</th>
-          <th>Последний handshake</th>
-          <th>Последняя активность в боте</th>
-          <th>Топ назначения 24ч</th>
-          <th>Регионы по конфигам</th>
+          <th>Р РѕР»СЊ</th>
+          <th>РљРѕРЅС„РёРіРё</th>
+          <th>РђРєС‚РёРІРЅРѕ 24С‡</th>
+          <th>Handshake 24С‡</th>
+          <th>Handshake 7Рґ</th>
+          <th>RX (РІСЃРµРіРѕ)</th>
+          <th>TX (РІСЃРµРіРѕ)</th>
+          <th>РЎРєРѕСЂРѕСЃС‚СЊ RX/TX</th>
+          <th>РџРѕСЃР»РµРґРЅРёР№ handshake</th>
+          <th>РџРѕСЃР»РµРґРЅСЏСЏ Р°РєС‚РёРІРЅРѕСЃС‚СЊ РІ Р±РѕС‚Рµ</th>
+          <th>РўРѕРї РЅР°Р·РЅР°С‡РµРЅРёСЏ 24С‡</th>
+          <th>Р РµРіРёРѕРЅС‹ РїРѕ РєРѕРЅС„РёРіР°Рј</th>
         </tr>
       </thead>
       <tbody>
@@ -210,7 +210,7 @@
         <tr data-chat-id="{{ u.chat_id }}">
           <td class="name">
             <a href="/user/{{ u.chat_id }}">
-              {% if u.username %}@{{ u.username }}{% elif u.full_name %}{{ u.full_name }}{% else %}(без имени){% endif %}
+              {% if u.username %}@{{ u.username }}{% elif u.full_name %}{{ u.full_name }}{% else %}(Р±РµР· РёРјРµРЅРё){% endif %}
             </a>
           </td>
           <td>{{ u.chat_id }}</td>
@@ -221,7 +221,7 @@
           <td>{{ u.handshakes_7d }}</td>
           <td><span class="rt-rx">{{ u.total_rx }}</span></td>
           <td><span class="rt-tx">{{ u.total_tx }}</span></td>
-          <td><span class="rt-rx-rate">{{ u.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ u.tx_rate_mbps }}</span> Мбит/с</td>
+          <td><span class="rt-rx-rate">{{ u.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ u.tx_rate_mbps }}</span> РњР±РёС‚/СЃ</td>
           <td><span class="rt-last-hs">{{ u.last_handshake }}</span></td>
           <td>{{ u.last_seen }}</td>
           <td>{{ u.top_destinations }}</td>
@@ -270,7 +270,7 @@
       if (!body) return;
       const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\"/g, '&quot;');
       if (!list || list.length === 0) {
-        body.innerHTML = '<tr><td colspan=\"3\" class=\"muted\">Новых заявок нет</td></tr>';
+        body.innerHTML = '<tr><td colspan=\"3\" class=\"muted\">РќРѕРІС‹С… Р·Р°СЏРІРѕРє РЅРµС‚</td></tr>';
         return;
       }
       body.innerHTML = list.map((p) => {
@@ -344,7 +344,9 @@
         });
       } catch (e) {}
     }
-    setInterval(pollRealtime, 5000);
+    const POLL_MS = 15000;
+    setInterval(() => { if (!document.hidden) pollRealtime(); }, POLL_MS);
   </script>
 </body>
 </html>
+

@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WG Monitor - Пользователь {{ data.user.chat_id }}</title>
+  <title>WG Monitor - РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ {{ data.user.chat_id }}</title>
   <style>
     body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f6f8fb; color:#1f2a37; }
     .top { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#fff; border-bottom:1px solid #dde4ee; position:sticky; top:0; z-index:2; }
@@ -29,45 +29,45 @@
 <body>
   <div class="top">
     <div>
-      <strong>Пользователь {{ data.user.chat_id }}</strong>
-      <span class="muted">роль: {{ data.user.role }}</span>
+      <strong>РџРѕР»СЊР·РѕРІР°С‚РµР»СЊ {{ data.user.chat_id }}</strong>
+      <span class="muted">СЂРѕР»СЊ: {{ data.user.role }}</span>
     </div>
     <div class="links">
-      <span class="muted">Время сервера: {{ server_time }}</span>
-      <a href="/">Пользователи</a>
-      <a href="/servers">Серверы</a>
-      <a href="/settings">Настройки</a>
-      <a href="/logout">Выйти</a>
+      <span class="muted">Р’СЂРµРјСЏ СЃРµСЂРІРµСЂР°: {{ server_time }}</span>
+      <a href="/">РџРѕР»СЊР·РѕРІР°С‚РµР»Рё</a>
+      <a href="/servers">РЎРµСЂРІРµСЂС‹</a>
+      <a href="/settings">РќР°СЃС‚СЂРѕР№РєРё</a>
+      <a href="/logout">Р’С‹Р№С‚Рё</a>
     </div>
   </div>
   <div class="wrap">
     <div class="cards">
       <div class="card"><div class="k">Username</div><div>{% if data.user.username %}@{{ data.user.username }}{% else %}-{% endif %}</div></div>
-      <div class="card"><div class="k">Имя</div><div>{% if data.user.full_name %}{{ data.user.full_name }}{% else %}-{% endif %}</div></div>
-      <div class="card"><div class="k">Создан</div><div>{{ data.user.created_at }}</div></div>
-      <div class="card"><div class="k">Последняя активность в боте</div><div>{{ data.user.last_seen }}</div></div>
-      <div class="card"><div class="k">Лимит конфигов</div><div>{{ data.user.max_clients }}</div></div>
-      <div class="card"><div class="k">Лог чата</div><div>{% if data.chat_file_exists %}<a class="btn" href="/user/{{ data.user.chat_id }}/chat">Скачать</a>{% else %}нет файла{% endif %}</div></div>
+      <div class="card"><div class="k">РРјСЏ</div><div>{% if data.user.full_name %}{{ data.user.full_name }}{% else %}-{% endif %}</div></div>
+      <div class="card"><div class="k">РЎРѕР·РґР°РЅ</div><div>{{ data.user.created_at }}</div></div>
+      <div class="card"><div class="k">РџРѕСЃР»РµРґРЅСЏСЏ Р°РєС‚РёРІРЅРѕСЃС‚СЊ РІ Р±РѕС‚Рµ</div><div>{{ data.user.last_seen }}</div></div>
+      <div class="card"><div class="k">Р›РёРјРёС‚ РєРѕРЅС„РёРіРѕРІ</div><div>{{ data.user.max_clients }}</div></div>
+      <div class="card"><div class="k">Р›РѕРі С‡Р°С‚Р°</div><div>{% if data.chat_file_exists %}<a class="btn" href="/user/{{ data.user.chat_id }}/chat">РЎРєР°С‡Р°С‚СЊ</a>{% else %}РЅРµС‚ С„Р°Р№Р»Р°{% endif %}</div></div>
     </div>
 
-    <h3>Конфиги</h3>
+    <h3>РљРѕРЅС„РёРіРё</h3>
     <table>
       <thead>
         <tr>
-          <th>Конфиг</th>
+          <th>РљРѕРЅС„РёРі</th>
           <th>IP</th>
-          <th>Регион</th>
+          <th>Р РµРіРёРѕРЅ</th>
           <th>Endpoint</th>
-          <th>Последний handshake</th>
-          <th>RX всего</th>
-          <th>TX всего</th>
-          <th>Скорость RX/TX</th>
-          <th>RX 24ч</th>
-          <th>TX 24ч</th>
-          <th>RX 7д</th>
-          <th>TX 7д</th>
-          <th>Handshake 24ч</th>
-          <th>Handshake 7д</th>
+          <th>РџРѕСЃР»РµРґРЅРёР№ handshake</th>
+          <th>RX РІСЃРµРіРѕ</th>
+          <th>TX РІСЃРµРіРѕ</th>
+          <th>РЎРєРѕСЂРѕСЃС‚СЊ RX/TX</th>
+          <th>RX 24С‡</th>
+          <th>TX 24С‡</th>
+          <th>RX 7Рґ</th>
+          <th>TX 7Рґ</th>
+          <th>Handshake 24С‡</th>
+          <th>Handshake 7Рґ</th>
         </tr>
       </thead>
       <tbody>
@@ -80,7 +80,7 @@
           <td><span class="rt-last-hs">{{ c.latest_handshake }}</span></td>
           <td><span class="rt-rx">{{ c.rx_total }}</span></td>
           <td><span class="rt-tx">{{ c.tx_total }}</span></td>
-          <td><span class="rt-rx-rate">{{ c.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ c.tx_rate_mbps }}</span> Мбит/с</td>
+          <td><span class="rt-rx-rate">{{ c.rx_rate_mbps }}</span> / <span class="rt-tx-rate">{{ c.tx_rate_mbps }}</span> РњР±РёС‚/СЃ</td>
           <td>{{ c.rx_24h }}</td>
           <td>{{ c.tx_24h }}</td>
           <td>{{ c.rx_7d }}</td>
@@ -92,17 +92,17 @@
       </tbody>
     </table>
 
-    <h3>Фильтры</h3>
+    <h3>Р¤РёР»СЊС‚СЂС‹</h3>
     <form class="filters" method="get" action="/user/{{ data.user.chat_id }}">
-      <input type="text" name="q" placeholder="Поиск по событиям" value="{{ data.filters.q }}" />
+      <input type="text" name="q" placeholder="РџРѕРёСЃРє РїРѕ СЃРѕР±С‹С‚РёСЏРј" value="{{ data.filters.q }}" />
       <select name="config_name">
         {% for cfg in data.config_filter_values %}
-          <option value="{{ cfg }}" {% if data.filters.config_name == cfg %}selected{% endif %}>{% if cfg %}{{ cfg }}{% else %}Все конфиги{% endif %}</option>
+          <option value="{{ cfg }}" {% if data.filters.config_name == cfg %}selected{% endif %}>{% if cfg %}{{ cfg }}{% else %}Р’СЃРµ РєРѕРЅС„РёРіРё{% endif %}</option>
         {% endfor %}
       </select>
       <select name="event_type">
         {% for et in data.event_types %}
-          <option value="{{ et }}" {% if data.filters.event_type == et %}selected{% endif %}>{% if et %}{{ et }}{% else %}Все события{% endif %}</option>
+          <option value="{{ et }}" {% if data.filters.event_type == et %}selected{% endif %}>{% if et %}{{ et }}{% else %}Р’СЃРµ СЃРѕР±С‹С‚РёСЏ{% endif %}</option>
         {% endfor %}
       </select>
       <select name="period">
@@ -116,67 +116,67 @@
         {% endfor %}
       </select>
       <input type="hidden" name="show_all_events" value="{{ data.filters.show_all_events }}" />
-      <button class="btn" type="submit">Применить</button>
-      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}">Сброс</a>
+      <button class="btn" type="submit">РџСЂРёРјРµРЅРёС‚СЊ</button>
+      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}">РЎР±СЂРѕСЃ</a>
     </form>
     <div class="filters">
-      <div class="muted"><strong>Точность и ограничения:</strong> скорость на графиках — это средняя за бакет ({{ data.bucket_label }}), а не мгновенная. Сбор выполняется каждые {{ data.poll_seconds }} сек.</div>
+      <div class="muted"><strong>РўРѕС‡РЅРѕСЃС‚СЊ Рё РѕРіСЂР°РЅРёС‡РµРЅРёСЏ:</strong> СЃРєРѕСЂРѕСЃС‚СЊ РЅР° РіСЂР°С„РёРєР°С… вЂ” СЌС‚Рѕ СЃСЂРµРґРЅСЏСЏ Р·Р° Р±Р°РєРµС‚ ({{ data.bucket_label }}), Р° РЅРµ РјРіРЅРѕРІРµРЅРЅР°СЏ. РЎР±РѕСЂ РІС‹РїРѕР»РЅСЏРµС‚СЃСЏ РєР°Р¶РґС‹Рµ {{ data.poll_seconds }} СЃРµРє.</div>
     </div>
 
     {% if data.filters.graph_scope != "none" and data.filters.graph_scope != "config" %}
-    <h3>График пользователя ({{ data.filters.period }})</h3>
+    <h3>Р“СЂР°С„РёРє РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ ({{ data.filters.period }})</h3>
     <div class="chart-wrap">
-      <div class="k">Трафик по бакетам + средняя скорость + handshake</div>
+      <div class="k">РўСЂР°С„РёРє РїРѕ Р±Р°РєРµС‚Р°Рј + СЃСЂРµРґРЅСЏСЏ СЃРєРѕСЂРѕСЃС‚СЊ + handshake</div>
       <canvas id="userCombinedChart" width="980" height="240"></canvas>
       <div class="chart-meta">
-        <div>Трафик всего: <strong>{{ data.user_traffic_total_gb_fmt }} ГБ</strong></div>
-        <div>Пик трафика/бакет: <strong>{{ data.user_traffic_peak_gb_fmt }} ГБ</strong></div>
-        <div>Средний трафик/бакет: <strong>{{ data.user_traffic_avg_gb_fmt }} ГБ</strong></div>
-        <div>Пик скорости: <strong>{{ data.user_speed_peak_mbps_fmt }} Мбит/с</strong></div>
-        <div>Handshake всего: <strong>{{ data.user_handshake_total }}</strong></div>
-        <div>Пик handshake/бакет: <strong>{{ data.user_handshake_peak }}</strong></div>
+        <div>РўСЂР°С„РёРє РІСЃРµРіРѕ: <strong>{{ data.user_traffic_total_gb_fmt }} Р“Р‘</strong></div>
+        <div>РџРёРє С‚СЂР°С„РёРєР°/Р±Р°РєРµС‚: <strong>{{ data.user_traffic_peak_gb_fmt }} Р“Р‘</strong></div>
+        <div>РЎСЂРµРґРЅРёР№ С‚СЂР°С„РёРє/Р±Р°РєРµС‚: <strong>{{ data.user_traffic_avg_gb_fmt }} Р“Р‘</strong></div>
+        <div>РџРёРє СЃРєРѕСЂРѕСЃС‚Рё: <strong>{{ data.user_speed_peak_mbps_fmt }} РњР±РёС‚/СЃ</strong></div>
+        <div>Handshake РІСЃРµРіРѕ: <strong>{{ data.user_handshake_total }}</strong></div>
+        <div>РџРёРє handshake/Р±Р°РєРµС‚: <strong>{{ data.user_handshake_peak }}</strong></div>
       </div>
     </div>
     {% endif %}
 
     {% if data.filters.graph_scope != "none" and data.filters.graph_scope != "user" %}
-    <h3>Графики по конфигам ({{ data.filters.period }})</h3>
+    <h3>Р“СЂР°С„РёРєРё РїРѕ РєРѕРЅС„РёРіР°Рј ({{ data.filters.period }})</h3>
     <div class="cards">
       {% for c in data.configs %}
       <div class="card cfg-chart">
         <div><strong>{{ c.name }}</strong></div>
         <canvas id="cfgChart{{ loop.index }}" width="360" height="190"></canvas>
         <div class="chart-meta">
-          <div>Трафик всего: <strong>{{ c.traffic_total_gb_fmt }} ГБ</strong></div>
-          <div>Пик трафика/бакет: <strong>{{ c.traffic_peak_gb_fmt }} ГБ</strong></div>
-          <div>Средний трафик/бакет: <strong>{{ c.traffic_avg_gb_fmt }} ГБ</strong></div>
-          <div>Пик скорости: <strong>{{ c.speed_peak_mbps_fmt }} Мбит/с</strong></div>
-          <div>Handshake всего: <strong>{{ c.handshake_total }}</strong></div>
-          <div>Пик handshake/бакет: <strong>{{ c.handshake_peak }}</strong></div>
+          <div>РўСЂР°С„РёРє РІСЃРµРіРѕ: <strong>{{ c.traffic_total_gb_fmt }} Р“Р‘</strong></div>
+          <div>РџРёРє С‚СЂР°С„РёРєР°/Р±Р°РєРµС‚: <strong>{{ c.traffic_peak_gb_fmt }} Р“Р‘</strong></div>
+          <div>РЎСЂРµРґРЅРёР№ С‚СЂР°С„РёРє/Р±Р°РєРµС‚: <strong>{{ c.traffic_avg_gb_fmt }} Р“Р‘</strong></div>
+          <div>РџРёРє СЃРєРѕСЂРѕСЃС‚Рё: <strong>{{ c.speed_peak_mbps_fmt }} РњР±РёС‚/СЃ</strong></div>
+          <div>Handshake РІСЃРµРіРѕ: <strong>{{ c.handshake_total }}</strong></div>
+          <div>РџРёРє handshake/Р±Р°РєРµС‚: <strong>{{ c.handshake_peak }}</strong></div>
         </div>
       </div>
       {% endfor %}
     </div>
     {% endif %}
 
-    <h3>Последние события</h3>
+    <h3>РџРѕСЃР»РµРґРЅРёРµ СЃРѕР±С‹С‚РёСЏ</h3>
     <div class="filters" style="margin-bottom:8px;">
-      <div class="muted">Всего событий: {{ data.events_total }}</div>
+      <div class="muted">Р’СЃРµРіРѕ СЃРѕР±С‹С‚РёР№: {{ data.events_total }}</div>
       {% if not data.events_show_all and data.events_total > 20 %}
-      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1">Показать всё</a>
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1">РџРѕРєР°Р·Р°С‚СЊ РІСЃС‘</a>
       {% endif %}
       {% if data.events_show_all %}
-      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}">Свернуть до 20</a>
+      <a class="btn btn-muted" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}">РЎРІРµСЂРЅСѓС‚СЊ РґРѕ 20</a>
       {% endif %}
     </div>
     <table>
       <thead>
         <tr>
-          <th>Время</th>
-          <th>Конфиг</th>
-          <th>Тип</th>
+          <th>Р’СЂРµРјСЏ</th>
+          <th>РљРѕРЅС„РёРі</th>
+          <th>РўРёРї</th>
           <th>Peer</th>
-          <th>Детали</th>
+          <th>Р”РµС‚Р°Р»Рё</th>
         </tr>
       </thead>
       <tbody>
@@ -193,12 +193,12 @@
     </table>
     {% if data.events_show_all and data.events_total_pages > 1 %}
     <div class="filters">
-      <div class="muted">Страница {{ data.events_page }} / {{ data.events_total_pages }}</div>
+      <div class="muted">РЎС‚СЂР°РЅРёС†Р° {{ data.events_page }} / {{ data.events_total_pages }}</div>
       {% if data.events_page > 1 %}
-      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page - 1 }}">Назад</a>
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page - 1 }}">РќР°Р·Р°Рґ</a>
       {% endif %}
       {% if data.events_page < data.events_total_pages %}
-      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page + 1 }}">Вперёд</a>
+      <a class="btn" href="/user/{{ data.user.chat_id }}?q={{ data.filters.q }}&config_name={{ data.filters.config_name }}&event_type={{ data.filters.event_type }}&period={{ data.filters.period }}&graph_scope={{ data.filters.graph_scope }}&show_all_events=1&events_page={{ data.events_page + 1 }}">Р’РїРµСЂС‘Рґ</a>
       {% endif %}
     </div>
     {% endif %}
@@ -356,8 +356,11 @@
       } catch (e) {}
     }
 
-    setInterval(pollRealtimeUser, 5000);
-    setInterval(pollRealtimeUserCharts, 5000);
+    const POLL_USER_MS = 15000;
+    setInterval(() => { if (!document.hidden) pollRealtimeUser(); }, POLL_USER_MS);
+    const POLL_CHARTS_MS = 20000;
+    setInterval(() => { if (!document.hidden) pollRealtimeUserCharts(); }, POLL_CHARTS_MS);
   </script>
 </body>
 </html>
+

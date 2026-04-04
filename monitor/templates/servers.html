@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
@@ -52,6 +52,19 @@
       </select>
       <button class="btn" type="submit">Обновить</button>
     </form>
+
+    <div class="cards">
+      <div class="card">
+        <div><strong>Сумма по всем интерфейсам ({{ data.period }})</strong></div>
+        <div>RX: <strong id="rt-sum-rx-period">{{ data.summary.rx_period_total }}</strong></div>
+        <div>TX: <strong id="rt-sum-tx-period">{{ data.summary.tx_period_total }}</strong></div>
+      </div>
+      <div class="card">
+        <div><strong>Сумма по всем интерфейсам (всё время)</strong></div>
+        <div>RX: <strong id="rt-sum-rx-all">{{ data.summary.rx_all_total }}</strong></div>
+        <div>TX: <strong id="rt-sum-tx-all">{{ data.summary.tx_all_total }}</strong></div>
+      </div>
+    </div>
 
     <h3>Регионы</h3>
     <table>
@@ -109,7 +122,8 @@
         </div>
         <div style="margin-top:8px;">Handshake: <strong class="rt-last-hs">{{ i.latest_handshake }}</strong></div>
         <div>Ping: <strong class="rt-ping">{{ i.latest_ping_ms }}</strong> мс</div>
-        <div>RX/TX всего: <strong class="rt-rx">{{ i.rx_total }}</strong> / <strong class="rt-tx">{{ i.tx_total }}</strong></div>
+        <div>RX/TX ({{ data.period }}): <strong class="rt-rx-period">{{ i.rx_total_period }}</strong> / <strong class="rt-tx-period">{{ i.tx_total_period }}</strong></div>
+        <div>RX/TX всего: <strong class="rt-rx-all">{{ i.rx_total_all }}</strong> / <strong class="rt-tx-all">{{ i.tx_total_all }}</strong></div>
         <div>Скорость RX/TX: <strong class="rt-rx-rate">{{ i.rx_rate_mbps }}</strong> / <strong class="rt-tx-rate">{{ i.tx_rate_mbps }}</strong> Мбит/с</div>
         <div>Uptime: <strong>{{ i.uptime_pct }}%</strong></div>
         <div class="muted">Проверка: <span class="rt-health-updated">{{ i.health_updated_at }}</span> | <span class="rt-health-details">{{ i.health_details }}</span></div>
@@ -133,6 +147,28 @@
       </div>
       {% endfor %}
     </div>
+
+    {% if data.archived_totals %}
+    <h3>Архивные интерфейсы (удалены, статистика сохранена)</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Интерфейс</th>
+          <th>RX/TX ({{ data.period }})</th>
+          <th>RX/TX всего</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in data.archived_totals %}
+        <tr>
+          <td>{{ a.name }}</td>
+          <td>{{ a.rx_total_period }} / {{ a.tx_total_period }}</td>
+          <td>{{ a.rx_total_all }} / {{ a.tx_total_all }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
@@ -175,9 +211,7 @@
             yPing: { position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, ticks: { callback: (v) => ru(v) } },
             yState: { position: 'right', min: 0, max: 1, display: false, grid: { drawOnChartArea: false } }
           },
-          plugins: {
-            legend: { display: true }
-          }
+          plugins: { legend: { display: true } }
         }
       });
     }
@@ -199,8 +233,10 @@
           const st = card.querySelector('.rt-state');
           const hs = card.querySelector('.rt-last-hs');
           const ping = card.querySelector('.rt-ping');
-          const rx = card.querySelector('.rt-rx');
-          const tx = card.querySelector('.rt-tx');
+          const rxp = card.querySelector('.rt-rx-period');
+          const txp = card.querySelector('.rt-tx-period');
+          const rxa = card.querySelector('.rt-rx-all');
+          const txa = card.querySelector('.rt-tx-all');
           const rxr = card.querySelector('.rt-rx-rate');
           const txr = card.querySelector('.rt-tx-rate');
           const hu = card.querySelector('.rt-health-updated');
@@ -212,16 +248,30 @@
           }
           if (hs) hs.textContent = item.latest_handshake ?? '-';
           if (ping) ping.textContent = item.latest_ping_ms ?? '-';
-          if (rx) rx.textContent = item.rx_total ?? '-';
-          if (tx) tx.textContent = item.tx_total ?? '-';
+          if (rxp) rxp.textContent = item.rx_total_period ?? '-';
+          if (txp) txp.textContent = item.tx_total_period ?? '-';
+          if (rxa) rxa.textContent = item.rx_total_all ?? '-';
+          if (txa) txa.textContent = item.tx_total_all ?? '-';
           if (rxr) rxr.textContent = item.rx_rate_mbps ?? 0;
           if (txr) txr.textContent = item.tx_rate_mbps ?? 0;
           if (hu) hu.textContent = item.health_updated_at ?? '-';
           if (hd) hd.textContent = item.health_details ?? '-';
         });
+        if (data.summary) {
+          const pRx = document.getElementById('rt-sum-rx-period');
+          const pTx = document.getElementById('rt-sum-tx-period');
+          const aRx = document.getElementById('rt-sum-rx-all');
+          const aTx = document.getElementById('rt-sum-tx-all');
+          if (pRx) pRx.textContent = data.summary.rx_period_total ?? '-';
+          if (pTx) pTx.textContent = data.summary.tx_period_total ?? '-';
+          if (aRx) aRx.textContent = data.summary.rx_all_total ?? '-';
+          if (aTx) aTx.textContent = data.summary.tx_all_total ?? '-';
+        }
       } catch (e) {}
     }
-    setInterval(pollRealtimeServers, 5000);
+
+    const POLL_MS = 15000;
+    setInterval(() => { if (!document.hidden) pollRealtimeServers(); }, POLL_MS);
   </script>
 </body>
 </html>

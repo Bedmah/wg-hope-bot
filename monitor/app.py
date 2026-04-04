@@ -254,6 +254,29 @@ def init_monitor_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_client_totals(
+                iface_name TEXT PRIMARY KEY,
+                updated_ts TEXT NOT NULL,
+                total_rx INTEGER NOT NULL,
+                total_tx INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS uplink_client_daily(
+                day TEXT NOT NULL,
+                iface_name TEXT NOT NULL,
+                rx_bytes INTEGER NOT NULL,
+                tx_bytes INTEGER NOT NULL,
+                updated_ts TEXT NOT NULL,
+                PRIMARY KEY(day, iface_name)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uplink_client_daily_day ON uplink_client_daily(day)")
 
         auth = conn.execute("SELECT id FROM monitor_auth WHERE id=1").fetchone()
         if not auth:
@@ -356,7 +379,120 @@ def init_monitor_db() -> None:
                     """,
                     (iface_name, last_ts, int(prev_rx), int(prev_tx), int(total_rx), int(total_tx)),
                 )
+        uplink_client_total_rows = conn.execute("SELECT COUNT(1) AS n FROM uplink_client_totals").fetchone()
+        if int(uplink_client_total_rows["n"] or 0) == 0:
+            mapping = peer_iface_map(conn)
+            agg: dict[str, tuple[int, int]] = {}
+            rows = conn.execute("SELECT peer_pub, total_rx, total_tx FROM wg_peer_totals").fetchall()
+            for r in rows:
+                iface_name = mapping.get(str(r["peer_pub"]))
+                if not iface_name:
+                    continue
+                rx0, tx0 = agg.get(iface_name, (0, 0))
+                agg[iface_name] = (rx0 + int(r["total_rx"] or 0), tx0 + int(r["total_tx"] or 0))
+            seed_ts = now_iso()
+            for iface_name, pair in agg.items():
+                conn.execute(
+                    """
+                    INSERT INTO uplink_client_totals(iface_name, updated_ts, total_rx, total_tx)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(iface_name) DO UPDATE SET
+                      updated_ts=excluded.updated_ts,
+                      total_rx=excluded.total_rx,
+                      total_tx=excluded.total_tx
+                    """,
+                    (iface_name, seed_ts, int(pair[0]), int(pair[1])),
+                )
         conn.commit()
+
+
+def default_region_iface(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        """
+        SELECT interface_name FROM uplink_regions
+        ORDER BY is_default DESC, code ASC
+        LIMIT 1
+        """
+    ).fetchone()
+    return str(row["interface_name"]) if row and row["interface_name"] else None
+
+
+def peer_iface_map(conn: sqlite3.Connection) -> dict[str, str]:
+    fallback = default_region_iface(conn)
+    rows = conn.execute(
+        """
+        SELECT c.pub AS peer_pub, c.region AS region_code, r.interface_name AS iface_name
+        FROM clients c
+        LEFT JOIN uplink_regions r ON r.code = c.region
+        """
+    ).fetchall()
+    out: dict[str, str] = {}
+    for r in rows:
+        pub = str(r["peer_pub"] or "").strip()
+        if not pub:
+            continue
+        iface = (r["iface_name"] or "").strip() or (fallback or "")
+        if not iface:
+            continue
+        out[pub] = iface
+    return out
+
+
+def apply_peer_deltas_to_uplink_totals(
+    conn: sqlite3.Connection,
+    ts: str,
+    peer_deltas: dict[str, tuple[int, int]],
+) -> None:
+    if not peer_deltas:
+        return
+    mapping = peer_iface_map(conn)
+    by_iface: dict[str, tuple[int, int]] = {}
+    for peer_pub, pair in peer_deltas.items():
+        iface_name = mapping.get(peer_pub)
+        if not iface_name:
+            continue
+        d_rx = max(int(pair[0] or 0), 0)
+        d_tx = max(int(pair[1] or 0), 0)
+        if d_rx == 0 and d_tx == 0:
+            continue
+        rx0, tx0 = by_iface.get(iface_name, (0, 0))
+        by_iface[iface_name] = (rx0 + d_rx, tx0 + d_tx)
+
+    if not by_iface:
+        return
+
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for iface_name, pair in by_iface.items():
+        delta_rx = int(pair[0])
+        delta_tx = int(pair[1])
+        prev = conn.execute(
+            "SELECT total_rx, total_tx FROM uplink_client_totals WHERE iface_name=?",
+            (iface_name,),
+        ).fetchone()
+        total_rx = delta_rx + (int(prev["total_rx"]) if prev else 0)
+        total_tx = delta_tx + (int(prev["total_tx"]) if prev else 0)
+        conn.execute(
+            """
+            INSERT INTO uplink_client_totals(iface_name, updated_ts, total_rx, total_tx)
+            VALUES(?,?,?,?)
+            ON CONFLICT(iface_name) DO UPDATE SET
+              updated_ts=excluded.updated_ts,
+              total_rx=excluded.total_rx,
+              total_tx=excluded.total_tx
+            """,
+            (iface_name, ts, total_rx, total_tx),
+        )
+        conn.execute(
+            """
+            INSERT INTO uplink_client_daily(day, iface_name, rx_bytes, tx_bytes, updated_ts)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(day, iface_name) DO UPDATE SET
+              rx_bytes=uplink_client_daily.rx_bytes + excluded.rx_bytes,
+              tx_bytes=uplink_client_daily.tx_bytes + excluded.tx_bytes,
+              updated_ts=excluded.updated_ts
+            """,
+            (day, iface_name, delta_rx, delta_tx, ts),
+        )
 
 
 def verify_credentials(username: str, password: str) -> bool:
@@ -697,6 +833,7 @@ def collect_once() -> None:
     peers = run_wg_dump()
     ts = now_iso()
     keep_before = (datetime.now(timezone.utc) - timedelta(days=MONITOR_KEEP_DAYS)).isoformat().replace("+00:00", "Z")
+    peer_deltas: dict[str, tuple[int, int]] = {}
 
     with db_conn() as conn:
         for peer in peers:
@@ -787,9 +924,11 @@ def collect_once() -> None:
                     d_tx = int(peer["tx"])
                 total_rx = int(prev_total["total_rx"]) + max(d_rx, 0)
                 total_tx = int(prev_total["total_tx"]) + max(d_tx, 0)
+                peer_deltas[peer["peer_pub"]] = (max(d_rx, 0), max(d_tx, 0))
             else:
                 total_rx = max(int(peer["rx"]), 0)
                 total_tx = max(int(peer["tx"]), 0)
+                peer_deltas[peer["peer_pub"]] = (max(int(peer["rx"]), 0), max(int(peer["tx"]), 0))
             conn.execute(
                 """
                 INSERT INTO wg_peer_totals(peer_pub, updated_ts, last_raw_rx, last_raw_tx, total_rx, total_tx)
@@ -815,12 +954,15 @@ def collect_once() -> None:
                 (peer["peer_pub"], ts, float(rx_mbps), float(tx_mbps)),
             )
 
+        apply_peer_deltas_to_uplink_totals(conn, ts, peer_deltas)
         collect_uplink_once(conn, ts)
 
         conn.execute("DELETE FROM wg_peer_samples WHERE ts < ?", (keep_before,))
         conn.execute("DELETE FROM wg_peer_events WHERE event_ts < ?", (keep_before,))
         conn.execute("DELETE FROM uplink_samples WHERE ts < ?", (keep_before,))
         conn.execute("DELETE FROM uplink_events WHERE event_ts < ?", (keep_before,))
+        daily_keep_before = (datetime.now(timezone.utc) - timedelta(days=max(MONITOR_KEEP_DAYS, 120))).strftime("%Y-%m-%d")
+        conn.execute("DELETE FROM uplink_client_daily WHERE day < ?", (daily_keep_before,))
         conn.commit()
 
 
@@ -996,6 +1138,32 @@ def peer_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
 def uplink_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
     rows = conn.execute("SELECT iface_name, total_rx, total_tx FROM uplink_totals").fetchall()
     return {str(r["iface_name"]): (int(r["total_rx"]), int(r["total_tx"])) for r in rows}
+
+
+def uplink_client_total_bytes(conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
+    rows = conn.execute("SELECT iface_name, total_rx, total_tx FROM uplink_client_totals").fetchall()
+    return {str(r["iface_name"]): (int(r["total_rx"]), int(r["total_tx"])) for r in rows}
+
+
+def uplink_client_period_bytes(conn: sqlite3.Connection, period: str) -> dict[str, tuple[int, int]]:
+    p = (period or "").strip().lower()
+    if p == "all":
+        return uplink_client_total_bytes(conn)
+    if p == "30d":
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    else:
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+        p = "7d"
+    rows = conn.execute(
+        """
+        SELECT iface_name, SUM(rx_bytes) AS rx_sum, SUM(tx_bytes) AS tx_sum
+        FROM uplink_client_daily
+        WHERE day >= ?
+        GROUP BY iface_name
+        """,
+        (since,),
+    ).fetchall()
+    return {str(r["iface_name"]): (int(r["rx_sum"] or 0), int(r["tx_sum"] or 0)) for r in rows}
 
 
 def peer_rates_mbps(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
@@ -1673,8 +1841,11 @@ def load_user_detail(
         }
 
 
-def load_servers_data(period: str = "24h") -> dict[str, Any]:
+def load_servers_data(period: str = "7d") -> dict[str, Any]:
     with db_conn() as conn:
+        period = (period or "7d").strip().lower()
+        if period not in ("7d", "30d", "all"):
+            period = "7d"
         region_rows = conn.execute(
             """
             SELECT r.code, r.label, r.interface_name, r.is_default,
@@ -1724,17 +1895,25 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
             """
         ).fetchall()
         iface_regions = interface_regions_map(conn)
-        totals = uplink_total_bytes(conn)
+        totals_all = uplink_client_total_bytes(conn)
+        totals_period = uplink_client_period_bytes(conn, period)
 
-        if period == "1h":
-            since_dt = datetime.now(timezone.utc) - timedelta(hours=1)
-            bucket_seconds = 60
-        elif period == "7d":
+        if period == "30d":
+            since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            bucket_seconds = 24 * 3600
+        elif period == "all":
+            oldest = conn.execute("SELECT MIN(ts) AS min_ts FROM uplink_samples").fetchone()
+            if oldest and oldest["min_ts"]:
+                try:
+                    since_dt = parse_iso(str(oldest["min_ts"]))
+                except Exception:
+                    since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            else:
+                since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            bucket_seconds = 24 * 3600
+        else:
             since_dt = datetime.now(timezone.utc) - timedelta(days=7)
             bucket_seconds = 6 * 3600
-        else:
-            since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
-            bucket_seconds = 300
         since_iso = since_dt.isoformat().replace("+00:00", "Z")
 
         by_iface: dict[str, list[sqlite3.Row]] = {}
@@ -1748,7 +1927,8 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
         for iface in iface_rows:
             name = iface["name"]
             rows = by_iface.get(name, [])
-            total_pair = totals.get(name)
+            total_pair_all = totals_all.get(name, (0, 0))
+            total_pair_period = totals_period.get(name, (0, 0))
             latest = rows[-1] if rows else None
             prev = rows[-2] if len(rows) >= 2 else None
             if iface["is_ok"] is None:
@@ -1855,8 +2035,10 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                     "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
                     "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
                     "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
-                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(latest["rx_bytes"])) if latest else "0 B"),
-                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(latest["tx_bytes"])) if latest else "0 B"),
+                    "rx_total_period": human_bytes(int(total_pair_period[0])),
+                    "tx_total_period": human_bytes(int(total_pair_period[1])),
+                    "rx_total_all": human_bytes(int(total_pair_all[0])),
+                    "tx_total_all": human_bytes(int(total_pair_all[1])),
                     "rx_rate_mbps": round(rx_rate / 1_000_000, 2),
                     "tx_rate_mbps": round(tx_rate / 1_000_000, 2),
                     "uptime_pct": round(uptime_pct, 2),
@@ -1868,17 +2050,47 @@ def load_servers_data(period: str = "24h") -> dict[str, Any]:
                 }
             )
 
+        iface_names_live = {str(i["name"]) for i in iface_rows}
+        archived_totals: list[dict[str, Any]] = []
+        for iface_name, pair in sorted(totals_all.items(), key=lambda x: x[0]):
+            if iface_name in iface_names_live:
+                continue
+            period_pair = totals_period.get(iface_name, (0, 0))
+            archived_totals.append(
+                {
+                    "name": iface_name,
+                    "rx_total_period": human_bytes(int(period_pair[0])),
+                    "tx_total_period": human_bytes(int(period_pair[1])),
+                    "rx_total_all": human_bytes(int(pair[0])),
+                    "tx_total_all": human_bytes(int(pair[1])),
+                }
+            )
+        period_sum_rx = sum(int(v[0]) for v in totals_period.values())
+        period_sum_tx = sum(int(v[1]) for v in totals_period.values())
+        all_sum_rx = sum(int(v[0]) for v in totals_all.values())
+        all_sum_tx = sum(int(v[1]) for v in totals_all.values())
+
         return {
             "period": period,
-            "period_values": [("1h", "1 час"), ("24h", "24 часа"), ("7d", "7 дней")],
+            "period_values": [("7d", "7 дней"), ("30d", "30 дней"), ("all", "Всё время")],
             "regions": regions,
             "interfaces": interfaces,
+            "archived_totals": archived_totals,
+            "summary": {
+                "rx_period_total": human_bytes(period_sum_rx),
+                "tx_period_total": human_bytes(period_sum_tx),
+                "rx_all_total": human_bytes(all_sum_rx),
+                "tx_all_total": human_bytes(all_sum_tx),
+            },
             "updated_at": server_time_str(),
         }
 
 
-def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
+def load_servers_realtime(period: str = "7d") -> dict[str, Any]:
     with db_conn() as conn:
+        period = (period or "7d").strip().lower()
+        if period not in ("7d", "30d", "all"):
+            period = "7d"
         iface_rows = conn.execute(
             """
             SELECT i.name, i.kind, i.service_name, i.table_id, i.enabled,
@@ -1890,16 +2102,22 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
             ORDER BY i.name
             """
         ).fetchall()
-        if period == "1h":
-            since_dt = datetime.now(timezone.utc) - timedelta(hours=1)
-            bucket_seconds = 60
-        elif period == "7d":
+        if period == "30d":
+            since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            bucket_seconds = 24 * 3600
+        elif period == "all":
+            oldest = conn.execute("SELECT MIN(ts) AS min_ts FROM uplink_samples").fetchone()
+            if oldest and oldest["min_ts"]:
+                try:
+                    since_dt = parse_iso(str(oldest["min_ts"]))
+                except Exception:
+                    since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            else:
+                since_dt = datetime.now(timezone.utc) - timedelta(days=30)
+            bucket_seconds = 24 * 3600
+        else:
             since_dt = datetime.now(timezone.utc) - timedelta(days=7)
             bucket_seconds = 6 * 3600
-        else:
-            since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
-            bucket_seconds = 300
-            period = "24h"
         since_iso = since_dt.isoformat().replace("+00:00", "Z")
 
         sample_rows = conn.execute(
@@ -1912,7 +2130,8 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
             ,
             (since_iso,),
         ).fetchall()
-        totals = uplink_total_bytes(conn)
+        totals_all = uplink_client_total_bytes(conn)
+        totals_period = uplink_client_period_bytes(conn, period)
         grouped: dict[str, list[sqlite3.Row]] = {}
         for r in sample_rows:
             grouped.setdefault(r["iface_name"], []).append(r)
@@ -1920,7 +2139,8 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
         for iface in iface_rows:
             name = iface["name"]
             rows = grouped.get(name, [])
-            total_pair = totals.get(name)
+            total_pair_all = totals_all.get(name, (0, 0))
+            total_pair_period = totals_period.get(name, (0, 0))
             latest = rows[-1] if rows else None
             prev = rows[-2] if len(rows) > 1 else None
             rx_rate = 0.0
@@ -1991,8 +2211,10 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
                     "health_updated_at": iso_to_local_str(iface["health_updated_at"]),
                     "latest_handshake": epoch_to_iso(int(latest["handshake_ts"])) if latest and int(latest["handshake_ts"] or 0) > 0 else "-",
                     "latest_ping_ms": (f"{float(latest['ping_ms']):.1f}" if latest and latest["ping_ms"] is not None else "-"),
-                    "rx_total": human_bytes(int(total_pair[0])) if total_pair else (human_bytes(int(latest["rx_bytes"])) if latest else "0 B"),
-                    "tx_total": human_bytes(int(total_pair[1])) if total_pair else (human_bytes(int(latest["tx_bytes"])) if latest else "0 B"),
+                    "rx_total_period": human_bytes(int(total_pair_period[0])),
+                    "tx_total_period": human_bytes(int(total_pair_period[1])),
+                    "rx_total_all": human_bytes(int(total_pair_all[0])),
+                    "tx_total_all": human_bytes(int(total_pair_all[1])),
                     "rx_rate_mbps": round(rx_rate, 2),
                     "tx_rate_mbps": round(tx_rate, 2),
                     "labels": labels,
@@ -2001,7 +2223,21 @@ def load_servers_realtime(period: str = "24h") -> dict[str, Any]:
                     "state_series": state_series,
                 }
             )
-        return {"period": period, "updated_at": server_time_str(), "interfaces": out}
+        period_sum_rx = sum(int(v[0]) for v in totals_period.values())
+        period_sum_tx = sum(int(v[1]) for v in totals_period.values())
+        all_sum_rx = sum(int(v[0]) for v in totals_all.values())
+        all_sum_tx = sum(int(v[1]) for v in totals_all.values())
+        return {
+            "period": period,
+            "updated_at": server_time_str(),
+            "interfaces": out,
+            "summary": {
+                "rx_period_total": human_bytes(period_sum_rx),
+                "tx_period_total": human_bytes(period_sum_tx),
+                "rx_all_total": human_bytes(all_sum_rx),
+                "tx_all_total": human_bytes(all_sum_tx),
+            },
+        }
 
 
 def load_user_realtime(chat_id: str) -> dict[str, Any] | None:
@@ -2197,7 +2433,7 @@ async def api_realtime_dashboard(request: Request):
 async def servers(request: Request):
     if not is_auth(request):
         return redirect_login()
-    period = (request.query_params.get("period") or "24h").strip()
+    period = (request.query_params.get("period") or "7d").strip()
     data = load_servers_data(period=period)
     return TEMPLATES.TemplateResponse(
         "servers.html",
@@ -2214,7 +2450,7 @@ async def servers(request: Request):
 async def api_realtime_servers(request: Request):
     if not is_auth(request):
         raise HTTPException(status_code=401, detail="unauthorized")
-    period = (request.query_params.get("period") or "24h").strip()
+    period = (request.query_params.get("period") or "7d").strip()
     return load_servers_realtime(period=period)
 
 
